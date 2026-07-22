@@ -29,6 +29,7 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_schemes_name ON schemes(name);
+  CREATE INDEX IF NOT EXISTS idx_schemes_category ON schemes(category);
 
   CREATE TABLE IF NOT EXISTS import_progress (
     source TEXT PRIMARY KEY,

@@ -4,6 +4,7 @@ data/*.db-*
 raw/
 dist/
 .env
+.logs/
 outputs/**/*.inspect.ndjson
 outputs/**/*.json
 outputs/**/*.png

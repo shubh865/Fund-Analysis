@@ -30,6 +30,12 @@ const compareSearch = ref('');
 const compareResults = ref([]);
 const compareSelection = ref([]);
 const compareLoading = ref(false);
+const peerCategory = ref('');
+const peerPeriod = ref(1);
+const peerPlan = ref('direct');
+const peerRows = ref([]);
+const peerBenchmark = ref(null);
+const peerLoading = ref(false);
 let searchTimer;
 
 const displaySchemes = computed(() => schemes.value.slice(0, 50));
@@ -207,6 +213,104 @@ async function showQuartiles() {
 async function showCompare() {
   view.value = 'compare';
   compareResults.value = [];
+}
+
+async function showPeerAnalysis() {
+  view.value = 'peers';
+  if (!categories.value.length) {
+    try { await loadCategories(); } catch (requestError) { error.value = requestError.message; }
+  }
+}
+
+function subtractCalendarYears(dateString, years) {
+  const date = new Date(`${dateString}T00:00:00Z`);
+  const month = date.getUTCMonth();
+  date.setUTCFullYear(date.getUTCFullYear() - years);
+  // 29 February becomes 28 February in a non-leap target year.
+  if (date.getUTCMonth() !== month) date.setUTCDate(0);
+  return date.toISOString().slice(0, 10);
+}
+
+function previousPoint(points, dateString) {
+  const index = points.findIndex((point) => point.date === dateString);
+  return index > 0 ? points[index - 1] : null;
+}
+
+function peerRollingMetrics(fundHistory, benchmarkHistory) {
+  if (!fundHistory?.length || !benchmarkHistory?.length) return {};
+  const benchmarkByDate = new Map(benchmarkHistory.map((point) => [point.date, point.value]));
+  return Object.fromEntries([1, 2, 3, 4, 5].map((years) => {
+    const fundReturns = [];
+    const benchmarkReturns = [];
+    let wins = 0;
+    for (const end of fundHistory) {
+      const benchmarkEnd = benchmarkByDate.get(end.date);
+      if (!Number.isFinite(benchmarkEnd)) continue;
+      const targetDate = subtractCalendarYears(end.date, years);
+      let start = latestPointOnOrBefore(fundHistory, targetDate);
+      // Fund and benchmark must use the same available start date, matching
+      // the date-validation step in the user's Excel method.
+      while (start && !benchmarkByDate.has(start.date)) {
+        start = previousPoint(fundHistory, start.date);
+      }
+      if (!start || start.date === end.date) continue;
+      const elapsedDays = (Date.parse(`${end.date}T00:00:00Z`) - Date.parse(`${start.date}T00:00:00Z`)) / 86_400_000;
+      if (elapsedDays <= 0) continue;
+      const annualisation = 365.2425 / elapsedDays;
+      const fundReturn = (Math.pow(end.nav / start.nav, annualisation) - 1) * 100;
+      const benchmarkReturn = (Math.pow(benchmarkEnd / benchmarkByDate.get(start.date), annualisation) - 1) * 100;
+      if (!Number.isFinite(fundReturn) || !Number.isFinite(benchmarkReturn)) continue;
+      fundReturns.push(fundReturn);
+      benchmarkReturns.push(benchmarkReturn);
+      if (fundReturn > benchmarkReturn) wins += 1;
+    }
+    if (!fundReturns.length) return [years, null];
+    const averageFund = fundReturns.reduce((sum, value) => sum + value, 0) / fundReturns.length;
+    const averageBenchmark = benchmarkReturns.reduce((sum, value) => sum + value, 0) / benchmarkReturns.length;
+    return [years, {
+      averageFund,
+      averageBenchmark,
+      alpha: averageFund - averageBenchmark,
+      consistency: (wins / fundReturns.length) * 100,
+      observations: fundReturns.length,
+    }];
+  }));
+}
+
+async function loadPeerAnalysis() {
+  if (!peerCategory.value) return;
+  peerLoading.value = true;
+  error.value = '';
+  try {
+    const response = await fetch(`/api/categories/${encodeURIComponent(peerCategory.value)}/peer-nav-history?plan=${encodeURIComponent(peerPlan.value)}`);
+    if (!response.ok) throw new Error('Could not load raw NAV and benchmark TRI histories for this category.');
+    const payload = await response.json();
+    peerBenchmark.value = payload.benchmark;
+    // Yield once so the loading state is visible before the browser performs
+    // the deliberately frontend-only rolling calculations.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    peerRows.value = payload.schemes
+      .map((scheme) => ({
+        ...scheme,
+        metrics: peerRollingMetrics(payload.histories[scheme.scheme_code], payload.benchmark_history),
+      }))
+      .filter((scheme) => scheme.metrics[peerPeriod.value])
+      .sort((left, right) => right.metrics[peerPeriod.value].alpha - left.metrics[peerPeriod.value].alpha);
+  } catch (requestError) {
+    error.value = requestError.message;
+    peerRows.value = [];
+    peerBenchmark.value = null;
+  } finally {
+    peerLoading.value = false;
+  }
+}
+
+const visiblePeerRows = computed(() => peerRows.value
+  .filter((row) => row.metrics[peerPeriod.value])
+  .sort((left, right) => right.metrics[peerPeriod.value].alpha - left.metrics[peerPeriod.value].alpha));
+
+function setPeerPeriod(years) {
+  peerPeriod.value = years;
 }
 
 async function searchCompare() {
@@ -461,7 +565,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
       <p class="intro">The first local data slice: current AMFI schemes and their latest published NAV.</p>
       <div class="header-meta"><span>Local-first</span><span>NAV-led</span><span>Browser-calculated</span></div>
-      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="view = 'schemes'">Schemes</button><button :class="{ active: view === 'categories' }" @click="showCategories">Categories</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'compare' }" @click="showCompare">Compare</button></div>
+      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="view = 'schemes'">Schemes</button><button :class="{ active: view === 'categories' }" @click="showCategories">Categories</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'compare' }" @click="showCompare">Compare</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button></div>
     </header>
 
     <section v-if="view === 'categories' && !selected" class="card category-browser" aria-label="Category rankings">
@@ -517,6 +621,21 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <p v-else-if="!compareSelection.length" class="message">Search for the first scheme you would like to compare.</p>
       <div v-if="compareRows.length" class="compare-matrix-wrap"><div class="compare-matrix"><div class="compare-matrix-head"><span>Scheme</span><span>NAV</span><span>1Y</span><span>3Y CAGR</span><span>5Y CAGR</span><span>Fund avg 1Y rolling</span><span>Fund avg 3Y rolling</span><span>Fund avg 5Y rolling</span><span>1Y vs benchmark</span><span>3Y vs benchmark</span><span>5Y vs benchmark</span><span></span></div><div v-for="row in compareRows" :key="row.scheme.scheme_code" class="compare-matrix-row"><span class="compare-scheme"><strong>{{ row.scheme.name }}</strong><small>{{ row.scheme.amc }} · {{ row.scheme.category || 'Category not supplied' }}</small></span><strong data-label="NAV">{{ formatNav(row.latestNav) }}</strong><strong data-label="1Y" :class="{ positive: row.returns.oneYear > 0, negative: row.returns.oneYear < 0 }">{{ row.returns.oneYear === null ? '—' : `${row.returns.oneYear >= 0 ? '+' : ''}${row.returns.oneYear.toFixed(2)}%` }}</strong><strong data-label="3Y CAGR" :class="{ positive: row.returns.threeYear > 0, negative: row.returns.threeYear < 0 }">{{ row.returns.threeYear === null ? '—' : `${row.returns.threeYear >= 0 ? '+' : ''}${row.returns.threeYear.toFixed(2)}%` }}</strong><strong data-label="5Y CAGR" :class="{ positive: row.returns.fiveYear > 0, negative: row.returns.fiveYear < 0 }">{{ row.returns.fiveYear === null ? '—' : `${row.returns.fiveYear >= 0 ? '+' : ''}${row.returns.fiveYear.toFixed(2)}%` }}</strong><strong data-label="Fund avg 1Y rolling" :class="{ positive: row.rollingOneYear > 0, negative: row.rollingOneYear < 0 }">{{ row.rollingOneYear === null ? '—' : `${row.rollingOneYear >= 0 ? '+' : ''}${row.rollingOneYear.toFixed(2)}%` }}</strong><strong data-label="Fund avg 3Y rolling" :class="{ positive: row.rollingThreeYear > 0, negative: row.rollingThreeYear < 0 }">{{ row.rollingThreeYear === null ? '—' : `${row.rollingThreeYear >= 0 ? '+' : ''}${row.rollingThreeYear.toFixed(2)}%` }}</strong><strong data-label="Fund avg 5Y rolling" :class="{ positive: row.rollingFiveYear > 0, negative: row.rollingFiveYear < 0 }">{{ row.rollingFiveYear === null ? '—' : `${row.rollingFiveYear >= 0 ? '+' : ''}${row.rollingFiveYear.toFixed(2)}%` }}</strong><strong data-label="1Y vs benchmark" :class="{ positive: row.benchmarkOutperformance.oneYear > 0, negative: row.benchmarkOutperformance.oneYear < 0 }">{{ row.benchmarkOutperformance.oneYear === null ? '—' : `${row.benchmarkOutperformance.oneYear >= 0 ? '+' : ''}${row.benchmarkOutperformance.oneYear.toFixed(2)}%` }}</strong><strong data-label="3Y vs benchmark" :class="{ positive: row.benchmarkOutperformance.threeYear > 0, negative: row.benchmarkOutperformance.threeYear < 0 }">{{ row.benchmarkOutperformance.threeYear === null ? '—' : `${row.benchmarkOutperformance.threeYear >= 0 ? '+' : ''}${row.benchmarkOutperformance.threeYear.toFixed(2)}%` }}</strong><strong data-label="5Y vs benchmark" :class="{ positive: row.benchmarkOutperformance.fiveYear > 0, negative: row.benchmarkOutperformance.fiveYear < 0 }">{{ row.benchmarkOutperformance.fiveYear === null ? '—' : `${row.benchmarkOutperformance.fiveYear >= 0 ? '+' : ''}${row.benchmarkOutperformance.fiveYear.toFixed(2)}%` }}</strong><button class="remove-compare" aria-label="Remove scheme" @click="removeFromComparison(row.scheme.scheme_code)">×</button></div></div></div>
       <p v-if="compareRows.length" class="compare-footnote">3Y benchmark comparison is shown only when that scheme’s mapped benchmark has imported TRI history.</p>
+    </section>
+
+    <section v-else-if="view === 'peers' && !selected" class="card peer-browser" aria-label="Peer analysis">
+      <div class="compare-intro"><div><p class="eyebrow">Peer analysis</p><h2>Compare a whole category</h2><p>Average every possible holding period, then see which peers beat their benchmark most consistently.</p></div><span>{{ visiblePeerRows.length }} eligible plans</span></div>
+      <div class="peer-controls">
+        <div><label for="peer-category">Category</label><select id="peer-category" v-model="peerCategory" @change="loadPeerAnalysis"><option value="">Select a category</option><option v-for="category in categories" :key="category.category" :value="category.category">{{ category.category }} ({{ category.scheme_count }})</option></select></div>
+        <div><label for="peer-plan">Plans</label><select id="peer-plan" v-model="peerPlan" :disabled="!peerCategory" @change="loadPeerAnalysis"><option value="direct">Direct Growth</option><option value="regular">Regular Growth</option><option value="all-growth">All Growth plans</option></select></div>
+      </div>
+      <div class="peer-period"><span>Holding period</span><div class="period-buttons"><button v-for="years in [1, 2, 3, 4, 5]" :key="years" type="button" :class="{ active: peerPeriod === years }" :disabled="!peerRows.length" @click="setPeerPeriod(years)">{{ years }}Y</button></div></div>
+      <p v-if="peerBenchmark" class="peer-benchmark">Benchmark: <strong>{{ peerBenchmark.name }}</strong><small>{{ peerBenchmark.mapping_status }} category mapping · calculated in your browser from raw NAV and TRI observations</small></p>
+      <p v-if="!peerCategory" class="message">Choose a category to analyse its peer funds.</p>
+      <p v-else-if="peerLoading" class="message">Loading source histories and calculating rolling peer metrics…</p>
+      <p v-else-if="!visiblePeerRows.length" class="message">No eligible Growth plans have enough matching NAV and benchmark TRI history for this period.</p>
+      <div v-else class="peer-table-wrap"><div class="peer-table"><div class="peer-head"><span>Scheme</span><span>Fund avg</span><span>Benchmark avg</span><span>Alpha</span><span>Consistency</span><span>Windows</span></div><button v-for="row in visiblePeerRows" :key="row.scheme_code" class="peer-row" @click="openScheme(row.scheme_code)"><span><strong>{{ row.name }}</strong><small>{{ row.amc }}</small></span><strong data-label="Fund avg" :class="{ positive: row.metrics[peerPeriod].averageFund > 0, negative: row.metrics[peerPeriod].averageFund < 0 }">{{ row.metrics[peerPeriod].averageFund.toFixed(2) }}%</strong><strong data-label="Benchmark avg" :class="{ positive: row.metrics[peerPeriod].averageBenchmark > 0, negative: row.metrics[peerPeriod].averageBenchmark < 0 }">{{ row.metrics[peerPeriod].averageBenchmark.toFixed(2) }}%</strong><strong data-label="Alpha" :class="{ positive: row.metrics[peerPeriod].alpha > 0, negative: row.metrics[peerPeriod].alpha < 0 }">{{ row.metrics[peerPeriod].alpha >= 0 ? '+' : '' }}{{ row.metrics[peerPeriod].alpha.toFixed(2) }}%</strong><strong data-label="Consistency">{{ row.metrics[peerPeriod].consistency.toFixed(1) }}%</strong><strong data-label="Windows">{{ row.metrics[peerPeriod].observations }}</strong></button></div></div>
+      <p v-if="visiblePeerRows.length" class="compare-footnote">Each window uses the same available fund NAV and benchmark TRI dates. Alpha means average fund return minus average benchmark return; consistency is the share of windows where the fund beat the benchmark.</p>
     </section>
 
     <section v-else-if="selected" class="detail card" aria-label="Scheme detail">

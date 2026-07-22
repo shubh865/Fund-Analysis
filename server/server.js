@@ -100,4 +100,54 @@ app.get('/api/categories/:category/nav-snapshot', (request, response) => {
   response.json({ category: request.params.category, years, as_of_month: asOfMonth, schemes });
 });
 
+app.get('/api/categories/:category/peer-nav-history', (request, response) => {
+  const category = request.params.category;
+  const plan = String(request.query.plan || 'direct');
+  if (!['direct', 'regular', 'all-growth'].includes(plan)) {
+    return response.status(400).json({ error: 'plan must be direct, regular, or all-growth' });
+  }
+  const benchmark = db.prepare(`
+    SELECT b.benchmark_id, b.name, cbd.mapping_status
+    FROM category_benchmark_defaults cbd
+    JOIN benchmarks b ON b.benchmark_id = cbd.benchmark_id
+    WHERE cbd.category = ?
+  `).get(category);
+  if (!benchmark) return response.status(404).json({ error: 'No benchmark mapping is available for this category.' });
+
+  // Source observations only: the browser calculates all rolling metrics.
+  // Ten years of raw data is enough to produce every 1Y–5Y rolling window
+  // currently supported while keeping local category responses practical.
+  const growthCondition = plan === 'direct'
+    ? "LOWER(s.name) LIKE '%growth%' AND LOWER(s.name) LIKE '%direct%'"
+    : plan === 'regular'
+      ? "LOWER(s.name) LIKE '%growth%' AND LOWER(s.name) NOT LIKE '%direct%'"
+      : "LOWER(s.name) LIKE '%growth%'";
+  const schemes = db.prepare(`
+    SELECT s.scheme_code, s.name, s.amc, s.category
+    FROM schemes s
+    WHERE s.category = ?
+      AND ${growthCondition}
+      AND EXISTS (SELECT 1 FROM nav_daily n WHERE n.scheme_code = s.scheme_code AND n.date >= '2010-01-01')
+    ORDER BY s.name COLLATE NOCASE
+  `).all(category);
+  const navRows = schemes.length
+    ? db.prepare(`
+      SELECT scheme_code, date, nav
+      FROM nav_daily
+      WHERE scheme_code IN (${schemes.map(() => '?').join(', ')}) AND date >= '2010-01-01'
+      ORDER BY scheme_code, date
+    `).all(...schemes.map((scheme) => scheme.scheme_code))
+    : [];
+  const benchmarkHistory = db.prepare(`
+    SELECT date, value
+    FROM benchmark_nav_daily
+    WHERE benchmark_id = ? AND date >= '2010-01-01'
+    ORDER BY date
+  `).all(benchmark.benchmark_id);
+
+  const histories = Object.fromEntries(schemes.map((scheme) => [scheme.scheme_code, []]));
+  for (const row of navRows) histories[row.scheme_code]?.push({ date: row.date, nav: row.nav });
+  response.json({ category, plan, benchmark, schemes, histories, benchmark_history: benchmarkHistory });
+});
+
 app.listen(port, () => console.log(`API listening on http://localhost:${port}`));
