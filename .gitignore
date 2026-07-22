@@ -1,0 +1,10 @@
+node_modules/
+data/*.db
+data/*.db-*
+raw/
+dist/
+.env
+outputs/**/*.inspect.ndjson
+outputs/**/*.json
+outputs/**/*.png
+outputs/**/*.mjs
