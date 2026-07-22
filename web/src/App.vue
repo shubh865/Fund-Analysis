@@ -723,7 +723,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       </section>
       <p v-if="history.length < 2" class="message">Historical NAV is not loaded yet. Returns will appear here once the archive import is complete.</p>
       <template v-else>
-        <section class="rolling-section" aria-label="Average rolling returns">
+        <section v-if="false" class="rolling-section" aria-label="Average rolling returns">
           <div><p class="eyebrow">Average rolling returns</p><p class="rolling-caption">Annualised average across every available rolling window</p></div>
           <div class="rolling-grid">
             <div v-for="rolling in rollingAverages" :key="rolling.years" class="rolling-item">
