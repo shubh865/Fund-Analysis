@@ -8,9 +8,13 @@ const error = ref('');
 const selected = ref(null);
 const history = ref([]);
 const benchmarkHistory = ref([]);
+const planPair = ref(null);
+const planPairHistory = ref([]);
 const detailLoading = ref(false);
 const selectedRange = ref('1Y');
 const ranges = { '1Y': 12, '3Y': 36, '5Y': 60, All: null };
+const directRegularRange = ref('5Y');
+const directRegularRanges = { '1Y': 12, '3Y': 36, '5Y': 60, '10Y': 120, All: null };
 const view = ref('schemes');
 const categories = ref([]);
 const selectedCategory = ref('');
@@ -365,6 +369,12 @@ function formatNav(nav) {
   return Number.isFinite(nav) ? nav.toFixed(4) : '—';
 }
 
+function formatCurrency(value) {
+  return Number.isFinite(value)
+    ? new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
+    : '—';
+}
+
 function returnFromMonths(months, annualised = false) {
   if (history.value.length < 2) return null;
   const latest = history.value.at(-1);
@@ -475,6 +485,44 @@ function latestPointOnOrBefore(points, targetDate) {
   return match >= 0 ? points[match] : null;
 }
 
+const directRegularComparison = computed(() => {
+  if (!selected.value || !planPair.value || !history.value.length || !planPairHistory.value.length) return null;
+  const selectedType = growthPlanType(selected.value.name);
+  if (!selectedType) return null;
+  const directHistory = selectedType === 'direct' ? history.value : planPairHistory.value;
+  const regularHistory = selectedType === 'regular' ? history.value : planPairHistory.value;
+  const regularByDate = new Map(regularHistory.map((point) => [point.date, point.nav]));
+  const commonPoints = directHistory
+    .filter((point) => regularByDate.has(point.date))
+    .map((point) => ({ date: point.date, directNav: point.nav, regularNav: regularByDate.get(point.date) }));
+  if (commonPoints.length < 2) return null;
+  const end = commonPoints.at(-1);
+  const months = directRegularRanges[directRegularRange.value];
+  let start = commonPoints[0];
+  if (months) {
+    const target = new Date(`${end.date}T00:00:00Z`);
+    target.setUTCMonth(target.getUTCMonth() - months);
+    start = latestPointOnOrBefore(commonPoints, target.toISOString().slice(0, 10));
+  }
+  if (!start || start.date === end.date) return null;
+  const principal = 100000;
+  const directValue = principal * (end.directNav / start.directNav);
+  const regularValue = principal * (end.regularNav / start.regularNav);
+  const directReturn = (directValue / principal - 1) * 100;
+  const regularReturn = (regularValue / principal - 1) * 100;
+  return {
+    principal,
+    startDate: start.date,
+    endDate: end.date,
+    directValue,
+    regularValue,
+    rupeeGap: directValue - regularValue,
+    returnGap: directReturn - regularReturn,
+    directReturn,
+    regularReturn,
+  };
+});
+
 function buildRollingReturns(years) {
   const points = history.value;
   const results = [];
@@ -543,7 +591,10 @@ async function openScheme(schemeCode) {
     selected.value = payload.scheme;
     history.value = payload.history;
     benchmarkHistory.value = payload.benchmark_history || [];
+    planPair.value = payload.plan_pair || null;
+    planPairHistory.value = payload.plan_pair_history || [];
     selectedRange.value = '1Y';
+    directRegularRange.value = '5Y';
   } catch (requestError) {
     error.value = requestError.message;
   } finally {
@@ -555,6 +606,8 @@ function closeDetail() {
   selected.value = null;
   history.value = [];
   benchmarkHistory.value = [];
+  planPair.value = null;
+  planPairHistory.value = [];
 }
 
 onMounted(async () => { await loadSchemes(); });
@@ -663,6 +716,11 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <p class="comparison-note">Fund NAV and benchmark TRI are source observations; all returns and outperformance are calculated in your browser.</p>
       </section>
       <p v-else-if="selected.benchmark_name" class="benchmark-unavailable">{{ selected.benchmark_name }} is mapped as a {{ selected.benchmark_mapping_status }} category default, but its TRI history is not yet available from the approved source.</p>
+      <section v-if="directRegularComparison" class="direct-regular-section" aria-label="Direct versus Regular plan cost visualiser">
+        <div class="direct-regular-heading"><div><p class="eyebrow">Direct vs Regular</p><h3>What the plan choice cost</h3><p>Same ₹1 lakh investment on {{ directRegularComparison.startDate }}.</p></div><div class="range-controls"><button v-for="range in Object.keys(directRegularRanges)" :key="range" :class="{ active: directRegularRange === range }" @click="directRegularRange = range">{{ range }}</button></div></div>
+        <div class="direct-regular-values"><div><span>Direct Growth value</span><strong class="positive">{{ formatCurrency(directRegularComparison.directValue) }}</strong><small>{{ directRegularComparison.directReturn >= 0 ? '+' : '' }}{{ directRegularComparison.directReturn.toFixed(2) }}%</small></div><div><span>Regular Growth value</span><strong>{{ formatCurrency(directRegularComparison.regularValue) }}</strong><small>{{ directRegularComparison.regularReturn >= 0 ? '+' : '' }}{{ directRegularComparison.regularReturn.toFixed(2) }}%</small></div><div class="direct-regular-gap"><span>Direct is ahead by</span><strong class="positive">{{ formatCurrency(directRegularComparison.rupeeGap) }}</strong><small>{{ directRegularComparison.returnGap >= 0 ? '+' : '' }}{{ directRegularComparison.returnGap.toFixed(2) }}% return gap</small></div></div>
+        <p>Using matching Direct and Regular Growth NAV dates through {{ directRegularComparison.endDate }}. This is a comparison of NAV outcomes, not a projection.</p>
+      </section>
       <p v-if="history.length < 2" class="message">Historical NAV is not loaded yet. Returns will appear here once the archive import is complete.</p>
       <template v-else>
         <section class="rolling-section" aria-label="Average rolling returns">

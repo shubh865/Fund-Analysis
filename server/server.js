@@ -6,6 +6,21 @@ const port = Number(process.env.PORT || 3000);
 
 app.use(express.json());
 
+function growthPlanType(name) {
+  const normalized = String(name || '').toLowerCase();
+  if (!normalized.includes('growth')) return null;
+  return /\bdirect\b/.test(normalized) ? 'direct' : 'regular';
+}
+
+function planFamily(name) {
+  return String(name || '').toUpperCase()
+    .replace(/\bFLEXICAP\b/g, 'FLEXI CAP')
+    .replace(/\b(DIRECT|REGULAR|PLAN|GROWTH|OPTION)\b/g, ' ')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 app.get('/api/health', (_request, response) => {
   response.json({ status: 'ok' });
 });
@@ -59,7 +74,29 @@ app.get('/api/schemes/:schemeCode/nav-history', (request, response) => {
       ORDER BY date ASC
     `).all(scheme.benchmark_id)
     : [];
-  response.json({ scheme, history, benchmark_history: benchmarkHistory });
+  const selectedPlanType = growthPlanType(scheme.name);
+  let planPair = null;
+  let planPairHistory = [];
+  if (selectedPlanType && scheme.amc) {
+    const candidates = db.prepare(`
+      SELECT scheme_code, name, amc, category
+      FROM schemes
+      WHERE amc = ? AND category IS ? AND scheme_code <> ? AND LOWER(name) LIKE '%growth%'
+    `).all(scheme.amc, scheme.category, scheme.scheme_code);
+    const wantedType = selectedPlanType === 'direct' ? 'regular' : 'direct';
+    const selectedFamily = planFamily(scheme.name);
+    planPair = candidates.find((candidate) => (
+      growthPlanType(candidate.name) === wantedType && planFamily(candidate.name) === selectedFamily
+    )) || null;
+    if (planPair) {
+      planPairHistory = db.prepare(`
+        SELECT date, nav FROM nav_daily
+        WHERE scheme_code = ?
+        ORDER BY date ASC
+      `).all(planPair.scheme_code);
+    }
+  }
+  response.json({ scheme, history, benchmark_history: benchmarkHistory, plan_pair: planPair, plan_pair_history: planPairHistory });
 });
 
 app.get('/api/categories', (_request, response) => {
