@@ -12,11 +12,14 @@
     "seed:benchmark-defaults": "node scripts/seed-benchmark-defaults.js",
     "import:nifty-tri": "node scripts/import-nifty-tri.js",
     "refresh:nifty-tri": "node scripts/refresh-nifty-tri.js",
-    "import:nifty-defaults": "node scripts/import-nifty-defaults.js"
+    "import:nifty-defaults": "node scripts/import-nifty-defaults.js",
+    "import:absl-holdings": "node scripts/import-absl-holdings.js",
+    "map:absl-portfolios": "node scripts/map-absl-portfolios.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.1",

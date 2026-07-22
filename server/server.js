@@ -99,6 +99,28 @@ app.get('/api/schemes/:schemeCode/nav-history', (request, response) => {
   response.json({ scheme, history, benchmark_history: benchmarkHistory, plan_pair: planPair, plan_pair_history: planPairHistory });
 });
 
+app.get('/api/schemes/:schemeCode/holdings', (request, response) => {
+  const portfolio = db.prepare(`
+    SELECT p.portfolio_id, p.name, p.source_fund_code, MAX(h.as_of_date) AS as_of_date
+    FROM scheme_portfolio_mappings m
+    JOIN holding_portfolios p ON p.portfolio_id = m.portfolio_id
+    JOIN portfolio_holdings h ON h.portfolio_id = p.portfolio_id
+    WHERE m.scheme_code = ?
+    GROUP BY p.portfolio_id, p.name, p.source_fund_code
+  `).get(request.params.schemeCode);
+  if (!portfolio) return response.status(404).json({ error: 'No verified monthly portfolio disclosure is available for this scheme yet.' });
+
+  // Source disclosure rows only. The browser calculates sector totals and rankings.
+  const holdings = db.prepare(`
+    SELECT asset_class, holding_group, instrument_name, isin, industry_or_rating,
+      quantity, market_value_lakh, weight, yield, yield_to_call
+    FROM portfolio_holdings
+    WHERE portfolio_id = ? AND as_of_date = ?
+    ORDER BY position_order
+  `).all(portfolio.portfolio_id, portfolio.as_of_date);
+  response.json({ portfolio, holdings });
+});
+
 app.get('/api/categories', (_request, response) => {
   const categories = db.prepare(`
     SELECT category, COUNT(*) AS scheme_count

@@ -64,6 +64,59 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_benchmark_nav_daily_date
     ON benchmark_nav_daily(date);
+
+  -- Monthly portfolio disclosures are source data. Calculated views such as
+  -- sector concentration, overlap and holding changes remain in the browser.
+  CREATE TABLE IF NOT EXISTS holding_portfolios (
+    portfolio_id INTEGER PRIMARY KEY,
+    amc TEXT NOT NULL,
+    source_fund_code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    UNIQUE (amc, source_fund_code)
+  );
+
+  CREATE TABLE IF NOT EXISTS holding_imports (
+    import_id INTEGER PRIMARY KEY,
+    amc TEXT NOT NULL,
+    as_of_date TEXT NOT NULL,
+    source_file TEXT NOT NULL,
+    source_url TEXT,
+    imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (amc, as_of_date, source_file)
+  );
+
+  CREATE TABLE IF NOT EXISTS portfolio_holdings (
+    portfolio_id INTEGER NOT NULL REFERENCES holding_portfolios(portfolio_id),
+    as_of_date TEXT NOT NULL,
+    position_order INTEGER NOT NULL,
+    asset_class TEXT,
+    holding_group TEXT,
+    instrument_name TEXT NOT NULL,
+    isin TEXT,
+    industry_or_rating TEXT,
+    quantity REAL,
+    market_value_lakh REAL,
+    weight REAL,
+    yield REAL,
+    yield_to_call REAL,
+    PRIMARY KEY (portfolio_id, as_of_date, position_order)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_portfolio_holdings_as_of_date
+    ON portfolio_holdings(as_of_date);
+  CREATE INDEX IF NOT EXISTS idx_portfolio_holdings_isin
+    ON portfolio_holdings(isin);
+
+  -- A disclosure portfolio is shared by Direct and Regular plans. This mapping
+  -- will be populated only after its source-fund identity is verified.
+  CREATE TABLE IF NOT EXISTS scheme_portfolio_mappings (
+    scheme_code TEXT PRIMARY KEY REFERENCES schemes(scheme_code),
+    portfolio_id INTEGER NOT NULL REFERENCES holding_portfolios(portfolio_id),
+    mapping_status TEXT NOT NULL CHECK(mapping_status IN ('provisional', 'verified')),
+    source_url TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Keep existing portable databases compatible as the source-data model grows.

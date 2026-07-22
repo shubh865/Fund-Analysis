@@ -10,6 +10,9 @@ const history = ref([]);
 const benchmarkHistory = ref([]);
 const planPair = ref(null);
 const planPairHistory = ref([]);
+const holdings = ref([]);
+const holdingPortfolio = ref(null);
+const holdingsLoading = ref(false);
 const detailLoading = ref(false);
 const selectedRange = ref('1Y');
 const ranges = { '1Y': 12, '3Y': 36, '5Y': 60, All: null };
@@ -526,6 +529,23 @@ const directRegularComparison = computed(() => {
   };
 });
 
+const topHoldings = computed(() => holdings.value
+  .filter((holding) => Number.isFinite(holding.weight) && holding.weight > 0)
+  .sort((left, right) => right.weight - left.weight)
+  .slice(0, 10));
+
+const sectorAllocation = computed(() => {
+  const sectors = new Map();
+  for (const holding of holdings.value) {
+    if (!holding.asset_class?.toLowerCase().startsWith('equity') || !holding.industry_or_rating || !Number.isFinite(holding.weight)) continue;
+    sectors.set(holding.industry_or_rating, (sectors.get(holding.industry_or_rating) || 0) + holding.weight);
+  }
+  return [...sectors.entries()]
+    .map(([name, weight]) => ({ name, weight }))
+    .sort((left, right) => right.weight - left.weight)
+    .slice(0, 10);
+});
+
 function buildRollingReturns(years) {
   const points = history.value;
   const results = [];
@@ -587,8 +607,14 @@ const chart = computed(() => {
 async function openScheme(schemeCode) {
   detailLoading.value = true;
   error.value = '';
+  holdings.value = [];
+  holdingPortfolio.value = null;
+  holdingsLoading.value = true;
   try {
-    const response = await fetch(`/api/schemes/${encodeURIComponent(schemeCode)}/nav-history`);
+    const [response, holdingsResponse] = await Promise.all([
+      fetch(`/api/schemes/${encodeURIComponent(schemeCode)}/nav-history`),
+      fetch(`/api/schemes/${encodeURIComponent(schemeCode)}/holdings`),
+    ]);
     if (!response.ok) throw new Error('Could not load this scheme’s NAV history.');
     const payload = await response.json();
     selected.value = payload.scheme;
@@ -598,10 +624,16 @@ async function openScheme(schemeCode) {
     planPairHistory.value = payload.plan_pair_history || [];
     selectedRange.value = '1Y';
     directRegularRange.value = '5Y';
+    if (holdingsResponse.ok) {
+      const holdingsPayload = await holdingsResponse.json();
+      holdings.value = holdingsPayload.holdings || [];
+      holdingPortfolio.value = holdingsPayload.portfolio || null;
+    }
   } catch (requestError) {
     error.value = requestError.message;
   } finally {
     detailLoading.value = false;
+    holdingsLoading.value = false;
   }
 }
 
@@ -611,6 +643,8 @@ function closeDetail() {
   benchmarkHistory.value = [];
   planPair.value = null;
   planPairHistory.value = [];
+  holdings.value = [];
+  holdingPortfolio.value = null;
 }
 
 onMounted(async () => { await loadSchemes(); });
@@ -724,6 +758,17 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <label class="investment-input" for="direct-regular-investment">Investment amount <input id="direct-regular-investment" v-model.number="directRegularInvestment" type="number" min="1" step="1000" inputmode="numeric"></label>
         <div class="direct-regular-values"><div><span>Direct Growth value</span><strong class="positive">{{ formatCurrency(directRegularComparison.directValue) }}</strong><small>{{ directRegularComparison.directReturn >= 0 ? '+' : '' }}{{ directRegularComparison.directReturn.toFixed(2) }}%</small></div><div><span>Regular Growth value</span><strong>{{ formatCurrency(directRegularComparison.regularValue) }}</strong><small>{{ directRegularComparison.regularReturn >= 0 ? '+' : '' }}{{ directRegularComparison.regularReturn.toFixed(2) }}%</small></div><div class="direct-regular-gap"><span>Direct is ahead by</span><strong class="positive">{{ formatCurrency(directRegularComparison.rupeeGap) }}</strong><small>{{ directRegularComparison.returnGap >= 0 ? '+' : '' }}{{ directRegularComparison.returnGap.toFixed(2) }}% return gap</small></div></div>
         <p>Using matching Direct and Regular Growth NAV dates through {{ directRegularComparison.endDate }}. This is a comparison of NAV outcomes, not a projection.</p>
+      </section>
+      <section v-if="holdingsLoading || holdingPortfolio" class="holdings-section" aria-label="Portfolio holdings">
+        <div class="holdings-heading"><div><p class="eyebrow">Portfolio disclosure</p><h3>Holdings & sector allocation</h3></div><p v-if="holdingPortfolio">{{ holdingPortfolio.as_of_date }}<small>ABSL monthly disclosure</small></p></div>
+        <p v-if="holdingsLoading" class="holdings-message">Loading raw monthly holdings…</p>
+        <template v-else>
+          <div class="holdings-grid">
+            <div><h4>Top holdings</h4><div class="holdings-list"><div v-for="holding in topHoldings" :key="`${holding.isin}-${holding.instrument_name}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.industry_or_rating || holding.asset_class || 'Portfolio holding' }}</small></span><b>{{ (holding.weight * 100).toFixed(2) }}%</b></div></div></div>
+            <div><h4>Top sectors</h4><div class="holdings-list"><div v-for="sector in sectorAllocation" :key="sector.name"><span><strong>{{ sector.name }}</strong><small>Equity allocation</small></span><b>{{ (sector.weight * 100).toFixed(2) }}%</b></div><p v-if="!sectorAllocation.length" class="holdings-message">Sector allocation is available for equity holdings only.</p></div></div>
+          </div>
+          <p class="holdings-note">Raw monthly portfolio positions supplied by ABSL. Rankings and sector totals are calculated in your browser.</p>
+        </template>
       </section>
       <p v-if="history.length < 2" class="message">Historical NAV is not loaded yet. Returns will appear here once the archive import is complete.</p>
       <template v-else>
