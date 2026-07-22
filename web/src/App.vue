@@ -36,6 +36,7 @@ const peerPlan = ref('direct');
 const peerRows = ref([]);
 const peerBenchmark = ref(null);
 const peerLoading = ref(false);
+const analysisMode = ref('peers');
 let searchTimer;
 
 const displaySchemes = computed(() => schemes.value.slice(0, 50));
@@ -211,12 +212,14 @@ async function showQuartiles() {
 }
 
 async function showCompare() {
-  view.value = 'compare';
+  view.value = 'peers';
+  analysisMode.value = 'selected';
   compareResults.value = [];
 }
 
 async function showPeerAnalysis() {
   view.value = 'peers';
+  analysisMode.value = 'peers';
   if (!categories.value.length) {
     try { await loadCategories(); } catch (requestError) { error.value = requestError.message; }
   }
@@ -565,7 +568,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
       <p class="intro">The first local data slice: current AMFI schemes and their latest published NAV.</p>
       <div class="header-meta"><span>Local-first</span><span>NAV-led</span><span>Browser-calculated</span></div>
-      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="view = 'schemes'">Schemes</button><button :class="{ active: view === 'categories' }" @click="showCategories">Categories</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'compare' }" @click="showCompare">Compare</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button></div>
+      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="view = 'schemes'">Schemes</button><button :class="{ active: view === 'categories' }" @click="showCategories">Categories</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button></div>
     </header>
 
     <section v-if="view === 'categories' && !selected" class="card category-browser" aria-label="Category rankings">
@@ -613,7 +616,8 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       </template>
     </section>
 
-    <section v-else-if="view === 'compare' && !selected" class="card compare-browser" aria-label="Fund comparison">
+    <section v-else-if="view === 'peers' && analysisMode === 'selected' && !selected" class="card compare-browser" aria-label="Fund comparison">
+      <div class="analysis-mode-switch"><button :class="{ active: analysisMode === 'selected' }" @click="analysisMode = 'selected'">Selected funds</button><button :class="{ active: analysisMode === 'peers' }" @click="analysisMode = 'peers'">Category peers</button></div>
       <div class="compare-intro"><div><p class="eyebrow">Comparison workspace</p><h2>Compare up to five schemes</h2><p>Returns and rolling averages are calculated from the stored NAV series in your browser.</p></div><span>{{ compareSelection.length }} / 5 selected</span></div>
       <div class="compare-search"><input v-model="compareSearch" @keyup.enter="searchCompare" placeholder="Search a scheme to add"><button :disabled="compareLoading || compareSearch.trim().length < 2 || compareSelection.length >= 5" @click="searchCompare">{{ compareLoading ? 'Loading…' : 'Add scheme' }}</button></div>
       <p v-if="error" class="message error">{{ error }}</p>
@@ -624,6 +628,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
     </section>
 
     <section v-else-if="view === 'peers' && !selected" class="card peer-browser" aria-label="Peer analysis">
+      <div class="analysis-mode-switch"><button :class="{ active: analysisMode === 'selected' }" @click="analysisMode = 'selected'">Selected funds</button><button :class="{ active: analysisMode === 'peers' }" @click="analysisMode = 'peers'">Category peers</button></div>
       <div class="compare-intro"><div><p class="eyebrow">Peer analysis</p><h2>Compare a whole category</h2><p>Average every possible holding period, then see which peers beat their benchmark most consistently.</p></div><span>{{ visiblePeerRows.length }} eligible plans</span></div>
       <div class="peer-controls">
         <div><label for="peer-category">Category</label><select id="peer-category" v-model="peerCategory" @change="loadPeerAnalysis"><option value="">Select a category</option><option v-for="category in categories" :key="category.category" :value="category.category">{{ category.category }} ({{ category.scheme_count }})</option></select></div>
