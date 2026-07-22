@@ -4,6 +4,7 @@ const db = require('../server/db');
 
 const sourceUrl = 'https://www.amfiindia.com/spages/NAVAll.txt';
 const rawDirectory = path.join(__dirname, '..', 'raw');
+const excludedAmcs = new Set(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'amc-exclusions.json'), 'utf8')));
 const invalidNavs = new Set(['#N/A', '#DIV/0!', 'N.A.', 'NA', 'B.C.', 'B. C.']);
 
 function normaliseIsin(value) {
@@ -58,8 +59,9 @@ async function getSource() {
 
 async function main() {
   const source = await getSource();
-  const rows = parseNavAll(source);
-  if (!rows.length) throw new Error('No valid NAV rows found; source format may have changed.');
+  const parsedRows = parseNavAll(source);
+  const rows = parsedRows.filter((row) => !excludedAmcs.has(row.amc));
+  if (!rows.length) throw new Error('No valid NAV rows remain after AMC exclusions; source format may have changed.');
   fs.mkdirSync(rawDirectory, { recursive: true });
   const latestDate = rows.map((row) => row.date).sort().at(-1);
   fs.writeFileSync(path.join(rawDirectory, `navall_${latestDate}.txt`), source);
@@ -81,7 +83,7 @@ async function main() {
   `);
   const importRows = db.transaction((records) => records.forEach((row) => { upsertScheme.run(row); upsertNav.run(row); }));
   importRows(rows);
-  console.log(`Imported ${rows.length} valid NAV rows; latest reported date: ${latestDate}.`);
+  console.log(`Imported ${rows.length} valid NAV rows; skipped ${parsedRows.length - rows.length} excluded-AMC rows; latest reported date: ${latestDate}.`);
 }
 
 main().catch((error) => { console.error(error.message); process.exitCode = 1; });

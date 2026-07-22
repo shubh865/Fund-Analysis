@@ -11,6 +11,7 @@
     "import:history": "node scripts/import-historical-archive.js",
     "seed:benchmark-defaults": "node scripts/seed-benchmark-defaults.js",
     "import:nifty-tri": "node scripts/import-nifty-tri.js",
+    "refresh:nifty-tri": "node scripts/refresh-nifty-tri.js",
     "import:nifty-defaults": "node scripts/import-nifty-defaults.js"
   },
   "dependencies": {
