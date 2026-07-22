@@ -15,6 +15,7 @@ const selectedRange = ref('1Y');
 const ranges = { '1Y': 12, '3Y': 36, '5Y': 60, All: null };
 const directRegularRange = ref('5Y');
 const directRegularRanges = { '1Y': 12, '3Y': 36, '5Y': 60, '10Y': 120, All: null };
+const directRegularInvestment = ref(100000);
 const view = ref('schemes');
 const categories = ref([]);
 const selectedCategory = ref('');
@@ -505,7 +506,9 @@ const directRegularComparison = computed(() => {
     start = latestPointOnOrBefore(commonPoints, target.toISOString().slice(0, 10));
   }
   if (!start || start.date === end.date) return null;
-  const principal = 100000;
+  const principal = Number.isFinite(directRegularInvestment.value) && directRegularInvestment.value > 0
+    ? directRegularInvestment.value
+    : 100000;
   const directValue = principal * (end.directNav / start.directNav);
   const regularValue = principal * (end.regularNav / start.regularNav);
   const directReturn = (directValue / principal - 1) * 100;
@@ -717,7 +720,8 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       </section>
       <p v-else-if="selected.benchmark_name" class="benchmark-unavailable">{{ selected.benchmark_name }} is mapped as a {{ selected.benchmark_mapping_status }} category default, but its TRI history is not yet available from the approved source.</p>
       <section v-if="directRegularComparison" class="direct-regular-section" aria-label="Direct versus Regular plan cost visualiser">
-        <div class="direct-regular-heading"><div><p class="eyebrow">Direct vs Regular</p><h3>What the plan choice cost</h3><p>Same ₹1 lakh investment on {{ directRegularComparison.startDate }}.</p></div><div class="range-controls"><button v-for="range in Object.keys(directRegularRanges)" :key="range" :class="{ active: directRegularRange === range }" @click="directRegularRange = range">{{ range }}</button></div></div>
+        <div class="direct-regular-heading"><div><p class="eyebrow">Direct vs Regular</p><h3>What the plan choice cost</h3><p>Same investment on {{ directRegularComparison.startDate }}.</p></div><div class="range-controls"><button v-for="range in Object.keys(directRegularRanges)" :key="range" :class="{ active: directRegularRange === range }" @click="directRegularRange = range">{{ range }}</button></div></div>
+        <label class="investment-input" for="direct-regular-investment">Investment amount <input id="direct-regular-investment" v-model.number="directRegularInvestment" type="number" min="1" step="1000" inputmode="numeric"></label>
         <div class="direct-regular-values"><div><span>Direct Growth value</span><strong class="positive">{{ formatCurrency(directRegularComparison.directValue) }}</strong><small>{{ directRegularComparison.directReturn >= 0 ? '+' : '' }}{{ directRegularComparison.directReturn.toFixed(2) }}%</small></div><div><span>Regular Growth value</span><strong>{{ formatCurrency(directRegularComparison.regularValue) }}</strong><small>{{ directRegularComparison.regularReturn >= 0 ? '+' : '' }}{{ directRegularComparison.regularReturn.toFixed(2) }}%</small></div><div class="direct-regular-gap"><span>Direct is ahead by</span><strong class="positive">{{ formatCurrency(directRegularComparison.rupeeGap) }}</strong><small>{{ directRegularComparison.returnGap >= 0 ? '+' : '' }}{{ directRegularComparison.returnGap.toFixed(2) }}% return gap</small></div></div>
         <p>Using matching Direct and Regular Growth NAV dates through {{ directRegularComparison.endDate }}. This is a comparison of NAV outcomes, not a projection.</p>
       </section>
