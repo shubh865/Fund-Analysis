@@ -117,11 +117,149 @@ db.exec(`
     source_url TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+
+  -- AMFI publishes Average AUM (AAUM), rather than point-in-time month-end
+  -- AUM.  Since 2010 the official series is normally quarterly.  Keep the
+  -- source period and AMFI code intact; any relationship analysis stays in
+  -- the browser.
+  CREATE TABLE IF NOT EXISTS scheme_aaum_periodic (
+    amfi_scheme_code TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    period_label TEXT NOT NULL,
+    financial_year TEXT,
+    reporting_frequency TEXT NOT NULL CHECK(reporting_frequency IN ('monthly', 'quarterly', 'unknown')),
+    scheme_name TEXT NOT NULL,
+    amc TEXT,
+    category TEXT,
+    aaum_excluding_domestic_fof_lakh REAL,
+    aaum_domestic_fof_lakh REAL,
+    source_url TEXT NOT NULL,
+    PRIMARY KEY (amfi_scheme_code, period_end)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_scheme_aaum_periodic_period_end
+    ON scheme_aaum_periodic(period_end);
+
+  -- AMFI's daily TER publication is at the underlying-scheme level and
+  -- reports Regular and Direct values together.  Store the published NSDL
+  -- identifier and components unmodified; do not derive or apply TER again
+  -- because it is already reflected in NAV.
+  CREATE TABLE IF NOT EXISTS scheme_ter_daily (
+    source_scheme_key TEXT NOT NULL,
+    date TEXT NOT NULL,
+    nsdl_scheme_code TEXT,
+    scheme_name TEXT NOT NULL,
+    amfi_mf_id TEXT,
+    scheme_type TEXT,
+    category TEXT,
+    regular_ber REAL,
+    regular_brokerage_cost REAL,
+    regular_transaction_cost REAL,
+    regular_statutory_levies REAL,
+    regular_ter REAL,
+    direct_ber REAL,
+    direct_brokerage_cost REAL,
+    direct_transaction_cost REAL,
+    direct_statutory_levies REAL,
+    direct_ter REAL,
+    source_url TEXT NOT NULL,
+    PRIMARY KEY (source_scheme_key, date)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_scheme_ter_daily_date
+    ON scheme_ter_daily(date);
+
+  -- TER is published once for the underlying fund with separate Direct and
+  -- Regular values.  This maps each NAV scheme to that raw TER identity;
+  -- calculations remain outside the database.
+  CREATE TABLE IF NOT EXISTS scheme_ter_mappings (
+    scheme_code TEXT NOT NULL REFERENCES schemes(scheme_code),
+    source_scheme_key TEXT NOT NULL,
+    plan_type TEXT NOT NULL CHECK(plan_type IN ('direct', 'regular')),
+    mapping_status TEXT NOT NULL CHECK(mapping_status IN ('provisional', 'verified')),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scheme_code, source_scheme_key)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_scheme_ter_mappings_scheme_code
+    ON scheme_ter_mappings(scheme_code);
+
+  CREATE INDEX IF NOT EXISTS idx_scheme_ter_mappings_source_key
+    ON scheme_ter_mappings(source_scheme_key);
 `);
 
 // Keep existing portable databases compatible as the source-data model grows.
 const schemeColumns = db.prepare('PRAGMA table_info(schemes)').all().map((column) => column.name);
 if (!schemeColumns.includes('category')) db.exec('ALTER TABLE schemes ADD COLUMN category TEXT');
+
+// AMFI added NSDL scheme codes to its newer TER format.  Older official TER
+// records do not have them, so migrate the original table to a source-key
+// primary key while preserving NSDL codes whenever they exist.
+const terColumns = db.prepare('PRAGMA table_info(scheme_ter_daily)').all().map((column) => column.name);
+if (!terColumns.includes('source_scheme_key')) {
+  db.exec(`
+    ALTER TABLE scheme_ter_daily RENAME TO scheme_ter_daily_legacy;
+    CREATE TABLE scheme_ter_daily (
+      source_scheme_key TEXT NOT NULL,
+      date TEXT NOT NULL,
+      nsdl_scheme_code TEXT,
+      scheme_name TEXT NOT NULL,
+      amfi_mf_id TEXT,
+      scheme_type TEXT,
+      category TEXT,
+      regular_ber REAL,
+      regular_brokerage_cost REAL,
+      regular_transaction_cost REAL,
+      regular_statutory_levies REAL,
+      regular_ter REAL,
+      direct_ber REAL,
+      direct_brokerage_cost REAL,
+      direct_transaction_cost REAL,
+      direct_statutory_levies REAL,
+      direct_ter REAL,
+      source_url TEXT NOT NULL,
+      PRIMARY KEY (source_scheme_key, date)
+    );
+    INSERT INTO scheme_ter_daily (
+      source_scheme_key, date, nsdl_scheme_code, scheme_name, amfi_mf_id,
+      scheme_type, category, regular_ber, regular_brokerage_cost,
+      regular_transaction_cost, regular_statutory_levies, regular_ter,
+      direct_ber, direct_brokerage_cost, direct_transaction_cost,
+      direct_statutory_levies, direct_ter, source_url
+    )
+    SELECT
+      'NSDL:' || nsdl_scheme_code, date, nsdl_scheme_code, scheme_name, amfi_mf_id,
+      scheme_type, category, regular_ber, regular_brokerage_cost,
+      regular_transaction_cost, regular_statutory_levies, regular_ter,
+      direct_ber, direct_brokerage_cost, direct_transaction_cost,
+      direct_statutory_levies, direct_ter, source_url
+    FROM scheme_ter_daily_legacy;
+    DROP TABLE scheme_ter_daily_legacy;
+    CREATE INDEX IF NOT EXISTS idx_scheme_ter_daily_date ON scheme_ter_daily(date);
+  `);
+}
+
+const terMappingColumns = db.prepare('PRAGMA table_info(scheme_ter_mappings)').all();
+const terMappingUsesCompositeKey = terMappingColumns.some((column) => column.name === 'source_scheme_key' && column.pk === 2);
+if (!terMappingUsesCompositeKey) {
+  db.exec(`
+    ALTER TABLE scheme_ter_mappings RENAME TO scheme_ter_mappings_legacy;
+    CREATE TABLE scheme_ter_mappings (
+      scheme_code TEXT NOT NULL REFERENCES schemes(scheme_code),
+      source_scheme_key TEXT NOT NULL,
+      plan_type TEXT NOT NULL CHECK(plan_type IN ('direct', 'regular')),
+      mapping_status TEXT NOT NULL CHECK(mapping_status IN ('provisional', 'verified')),
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (scheme_code, source_scheme_key)
+    );
+    INSERT INTO scheme_ter_mappings (scheme_code, source_scheme_key, plan_type, mapping_status, updated_at)
+    SELECT scheme_code, source_scheme_key, plan_type, mapping_status, updated_at
+    FROM scheme_ter_mappings_legacy;
+    DROP TABLE scheme_ter_mappings_legacy;
+    CREATE INDEX IF NOT EXISTS idx_scheme_ter_mappings_scheme_code ON scheme_ter_mappings(scheme_code);
+    CREATE INDEX IF NOT EXISTS idx_scheme_ter_mappings_source_key ON scheme_ter_mappings(source_scheme_key);
+  `);
+}
 
 // The historical seed loader deliberately defers this secondary index. SQLite
 // can then bulk-load millions of source NAV rows much faster and rebuild it

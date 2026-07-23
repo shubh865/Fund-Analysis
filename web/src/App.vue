@@ -13,6 +13,8 @@ const planPairHistory = ref([]);
 const holdings = ref([]);
 const holdingPortfolio = ref(null);
 const holdingsLoading = ref(false);
+const fundSnapshot = ref({ aaum: [], ter: [] });
+const fundSnapshotLoading = ref(false);
 const detailLoading = ref(false);
 const selectedRange = ref('1Y');
 const ranges = { '1Y': 12, '3Y': 36, '5Y': 60, All: null };
@@ -546,6 +548,29 @@ const sectorAllocation = computed(() => {
     .slice(0, 10);
 });
 
+const aaumHistory = computed(() => fundSnapshot.value.aaum || []);
+const latestAaum = computed(() => aaumHistory.value.at(-1) || null);
+const aaumChange = computed(() => {
+  if (aaumHistory.value.length < 2) return null;
+  const latest = aaumHistory.value.at(-1)?.aaum_excluding_domestic_fof_lakh;
+  const previous = aaumHistory.value.at(-2)?.aaum_excluding_domestic_fof_lakh;
+  if (!Number.isFinite(latest) || !Number.isFinite(previous) || previous <= 0) return null;
+  return ((latest / previous) - 1) * 100;
+});
+const selectedTerHistory = computed(() => (fundSnapshot.value.ter || [])
+  .map((point) => ({ ...point, value: point.plan_type === 'direct' ? point.direct_ter : point.regular_ter }))
+  .filter((point) => Number.isFinite(point.value)));
+const latestTer = computed(() => selectedTerHistory.value.at(-1) || null);
+const snapshotPlanLabel = computed(() => selectedTerHistory.value[0]?.plan_type === 'direct' ? 'Direct' : 'Regular');
+
+function formatAaum(lakh) {
+  if (!Number.isFinite(lakh)) return '—';
+  const crore = lakh / 100;
+  if (crore >= 100000) return `₹${(crore / 100000).toFixed(2)}L cr`;
+  if (crore >= 1000) return `₹${(crore / 1000).toFixed(1)}K cr`;
+  return `₹${crore.toFixed(crore >= 100 ? 0 : 1)} cr`;
+}
+
 function buildRollingReturns(years) {
   const points = history.value;
   const results = [];
@@ -610,10 +635,13 @@ async function openScheme(schemeCode) {
   holdings.value = [];
   holdingPortfolio.value = null;
   holdingsLoading.value = true;
+  fundSnapshot.value = { aaum: [], ter: [] };
+  fundSnapshotLoading.value = true;
   try {
-    const [response, holdingsResponse] = await Promise.all([
+    const [response, holdingsResponse, snapshotResponse] = await Promise.all([
       fetch(`/api/schemes/${encodeURIComponent(schemeCode)}/nav-history`),
       fetch(`/api/schemes/${encodeURIComponent(schemeCode)}/holdings`),
+      fetch(`/api/schemes/${encodeURIComponent(schemeCode)}/fund-snapshot`),
     ]);
     if (!response.ok) throw new Error('Could not load this scheme’s NAV history.');
     const payload = await response.json();
@@ -629,11 +657,13 @@ async function openScheme(schemeCode) {
       holdings.value = holdingsPayload.holdings || [];
       holdingPortfolio.value = holdingsPayload.portfolio || null;
     }
+    if (snapshotResponse.ok) fundSnapshot.value = await snapshotResponse.json();
   } catch (requestError) {
     error.value = requestError.message;
   } finally {
     detailLoading.value = false;
     holdingsLoading.value = false;
+    fundSnapshotLoading.value = false;
   }
 }
 
@@ -645,6 +675,7 @@ function closeDetail() {
   planPairHistory.value = [];
   holdings.value = [];
   holdingPortfolio.value = null;
+  fundSnapshot.value = { aaum: [], ter: [] };
 }
 
 onMounted(async () => { await loadSchemes(); });
@@ -656,7 +687,6 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
     <header>
       <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
-      <p class="intro">The first local data slice: current AMFI schemes and their latest published NAV.</p>
       <div class="header-meta"><span>Local-first</span><span>NAV-led</span><span>Browser-calculated</span></div>
       <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="view = 'schemes'">Schemes</button><button :class="{ active: view === 'categories' }" @click="showCategories">Categories</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button></div>
     </header>
@@ -739,7 +769,19 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <div><p class="eyebrow">{{ selected.category || selected.amc || 'AMFI scheme' }} · {{ selected.scheme_code }}</p><h2>{{ selected.name }}</h2><p class="scheme-category">{{ selected.amc }}<template v-if="selected.category"> · {{ selected.category }}</template></p><p v-if="selected.benchmark_name" class="benchmark-note"><span>Reference benchmark</span>{{ selected.benchmark_name }} <em>provisional category default</em></p></div>
         <div class="nav"><strong>{{ formatNav(selected.latest_nav) }}</strong><span>NAV · {{ selected.latest_nav_date }}</span></div>
       </div>
+      <section v-if="fundSnapshotLoading || latestAaum || latestTer || holdingPortfolio" class="fund-snapshot" aria-label="Fund snapshot">
+        <div class="snapshot-heading"><div><p class="eyebrow">Fund snapshot</p><h3>Scale, cost & disclosure</h3></div><p>Source observations<small>Calculated context stays in your browser</small></p></div>
+        <p v-if="fundSnapshotLoading" class="snapshot-message">Loading AAUM and TER source history…</p>
+        <div v-else class="snapshot-grid">
+          <div><span>Latest reported AAUM</span><strong>{{ latestAaum ? formatAaum(latestAaum.aaum_excluding_domestic_fof_lakh) : '—' }}</strong><small>{{ latestAaum ? `${latestAaum.period_label} · AMFI average AUM` : 'No AMFI AAUM linked yet' }}</small></div>
+          <div><span>AAUM movement</span><strong :class="{ positive: aaumChange > 0, negative: aaumChange < 0 }">{{ aaumChange === null ? '—' : `${aaumChange >= 0 ? '+' : ''}${aaumChange.toFixed(1)}%` }}</strong><small>{{ aaumChange === null ? 'Needs two reporting periods' : 'Versus previous reporting period' }}</small></div>
+          <div><span>{{ snapshotPlanLabel }} TER</span><strong>{{ latestTer ? `${latestTer.value.toFixed(2)}%` : '—' }}</strong><small>{{ latestTer ? `${latestTer.date} · AMFI daily disclosure` : 'No TER mapping linked yet' }}</small></div>
+          <div><span>Portfolio disclosure</span><strong>{{ holdingPortfolio ? 'Available' : 'Not imported' }}</strong><small>{{ holdingPortfolio ? `${holdingPortfolio.as_of_date} · ${holdingPortfolio.name}` : 'Shown only when an AMC disclosure is mapped' }}</small></div>
+        </div>
+        <p v-if="!fundSnapshotLoading" class="snapshot-note">AAUM uses AMFI’s reported average AUM, not month-end AUM. TER is already reflected in NAV and is shown here as a separate cost observation.</p>
+      </section>
       <section class="returns" aria-label="Point-to-point returns">
+        <div class="returns-heading"><div><p class="eyebrow">Return snapshot</p><h3>Point-to-point returns</h3></div><p>Latest NAV date<small>{{ selected.latest_nav_date }}</small></p></div>
         <div v-for="period in returnPeriods" :key="period.label" class="return-item">
           <span>{{ period.label }}<small v-if="period.annualised">annualised</small></span><strong :class="{ positive: period.value > 0, negative: period.value < 0 }">{{ period.value === null ? '—' : `${period.value >= 0 ? '+' : ''}${period.value.toFixed(2)}%` }}</strong>
         </div>

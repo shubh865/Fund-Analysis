@@ -121,6 +121,28 @@ app.get('/api/schemes/:schemeCode/holdings', (request, response) => {
   response.json({ portfolio, holdings });
 });
 
+app.get('/api/schemes/:schemeCode/fund-snapshot', (request, response) => {
+  const scheme = db.prepare('SELECT scheme_code, name FROM schemes WHERE scheme_code = ?').get(request.params.schemeCode);
+  if (!scheme) return response.status(404).json({ error: 'Scheme not found' });
+
+  // Raw observations only. Trend and change calculations remain in the browser.
+  const aaum = db.prepare(`
+    SELECT period_end, period_label, reporting_frequency,
+      aaum_excluding_domestic_fof_lakh, aaum_domestic_fof_lakh
+    FROM scheme_aaum_periodic
+    WHERE amfi_scheme_code = ?
+    ORDER BY period_end ASC
+  `).all(scheme.scheme_code);
+  const ter = db.prepare(`
+    SELECT t.date, t.regular_ter, t.direct_ter, m.plan_type, m.mapping_status
+    FROM scheme_ter_mappings m
+    JOIN scheme_ter_daily t ON t.source_scheme_key = m.source_scheme_key
+    WHERE m.scheme_code = ?
+    ORDER BY t.date ASC
+  `).all(scheme.scheme_code);
+  response.json({ aaum, ter });
+});
+
 app.get('/api/categories', (_request, response) => {
   const categories = db.prepare(`
     SELECT category, COUNT(*) AS scheme_count

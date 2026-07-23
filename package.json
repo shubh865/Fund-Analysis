@@ -14,7 +14,13 @@
     "refresh:nifty-tri": "node scripts/refresh-nifty-tri.js",
     "import:nifty-defaults": "node scripts/import-nifty-defaults.js",
     "import:absl-holdings": "node scripts/import-absl-holdings.js",
-    "map:absl-portfolios": "node scripts/map-absl-portfolios.js"
+    "map:absl-portfolios": "node scripts/map-absl-portfolios.js",
+    "import:amfi-aaum": "node scripts/import-amfi-aaum.js",
+    "import:amfi-ter": "node scripts/import-amfi-ter.js",
+    "backfill:amfi-aaum": "node scripts/import-amfi-aaum.js --all",
+    "backfill:amfi-ter": "node scripts/import-amfi-ter.js --all",
+    "backfill:amfi-history": "node scripts/backfill-amfi-history.js",
+    "map:amfi-ter": "node scripts/map-amfi-ter.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",
