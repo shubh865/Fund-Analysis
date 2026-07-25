@@ -21,6 +21,7 @@
     "map:hdfc-portfolios": "node scripts/map-hdfc-portfolios.js",
     "import:sbi-holdings": "node scripts/import-sbi-holdings.js",
     "map:sbi-portfolios": "node scripts/map-sbi-portfolios.js",
+    "refresh:sbi-holdings": "node scripts/refresh-sbi-holdings.js",
     "import:amfi-aaum": "node scripts/import-amfi-aaum.js",
     "import:amfi-ter": "node scripts/import-amfi-ter.js",
     "backfill:amfi-aaum": "node scripts/import-amfi-aaum.js --all",
