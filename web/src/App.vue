@@ -5,6 +5,7 @@ const search = ref('');
 const schemes = ref([]);
 const loading = ref(false);
 const error = ref('');
+const schemeStructure = ref('all');
 const selected = ref(null);
 const history = ref([]);
 const benchmarkHistory = ref([]);
@@ -21,6 +22,7 @@ const ranges = { '1Y': 12, '3Y': 36, '5Y': 60, All: null };
 const directRegularRange = ref('5Y');
 const directRegularRanges = { '1Y': 12, '3Y': 36, '5Y': 60, '10Y': 120, All: null };
 const directRegularInvestment = ref(100000);
+const riskYears = ref(3);
 const view = ref('schemes');
 const categories = ref([]);
 const selectedCategory = ref('');
@@ -55,7 +57,7 @@ async function loadSchemes() {
   loading.value = true;
   error.value = '';
   try {
-    const response = await fetch(`/api/schemes?q=${encodeURIComponent(search.value)}&limit=50`);
+    const response = await fetch(`/api/schemes?q=${encodeURIComponent(search.value)}&structure=${encodeURIComponent(schemeStructure.value)}&limit=50`);
     if (!response.ok) throw new Error('Could not load schemes. Import the daily NAV file first.');
     schemes.value = (await response.json()).schemes;
   } catch (requestError) {
@@ -371,6 +373,11 @@ function queueSearch() {
   searchTimer = setTimeout(loadSchemes, 250);
 }
 
+function setSchemeStructure(structure) {
+  schemeStructure.value = structure;
+  loadSchemes();
+}
+
 function formatNav(nav) {
   return Number.isFinite(nav) ? nav.toFixed(4) : '—';
 }
@@ -490,6 +497,101 @@ function latestPointOnOrBefore(points, targetDate) {
   }
   return match >= 0 ? points[match] : null;
 }
+
+function mean(values) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function sampleStandardDeviation(values) {
+  if (values.length < 2) return null;
+  const average = mean(values);
+  return Math.sqrt(values.reduce((sum, value) => sum + ((value - average) ** 2), 0) / (values.length - 1));
+}
+
+function commonDailyReturns(fundHistory, benchmarkPoints, years) {
+  const benchmarkByDate = new Map(benchmarkPoints.map((point) => [point.date, point.value]));
+  const commonPoints = fundHistory
+    .filter((point) => Number.isFinite(benchmarkByDate.get(point.date)))
+    .map((point) => ({ date: point.date, fund: point.nav, benchmark: benchmarkByDate.get(point.date) }));
+  if (commonPoints.length < 2) return [];
+  const end = commonPoints.at(-1);
+  const startDate = subtractCalendarYears(end.date, years);
+  const start = latestPointOnOrBefore(commonPoints, startDate);
+  if (!start) return [];
+  const startIndex = commonPoints.findIndex((point) => point.date === start.date);
+  const returns = [];
+  for (let index = startIndex + 1; index < commonPoints.length; index += 1) {
+    const previous = commonPoints[index - 1];
+    const current = commonPoints[index];
+    const fund = (current.fund / previous.fund) - 1;
+    const benchmark = (current.benchmark / previous.benchmark) - 1;
+    if (Number.isFinite(fund) && Number.isFinite(benchmark)) returns.push({ date: current.date, fund, benchmark });
+  }
+  return returns;
+}
+
+function maximumDrawdown(points, valueKey) {
+  let peak = -Infinity;
+  let worst = 0;
+  for (const point of points) {
+    const value = point[valueKey];
+    if (!Number.isFinite(value) || value <= 0) continue;
+    peak = Math.max(peak, value);
+    worst = Math.min(worst, (value / peak) - 1);
+  }
+  return peak > 0 ? worst * 100 : null;
+}
+
+function monthlyReturnPairs(dailyReturns) {
+  const months = new Map();
+  for (const point of dailyReturns) {
+    const key = point.date.slice(0, 7);
+    const prior = months.get(key) || { fund: 1, benchmark: 1 };
+    months.set(key, { fund: prior.fund * (1 + point.fund), benchmark: prior.benchmark * (1 + point.benchmark) });
+  }
+  return [...months.values()].map((month) => ({ fund: month.fund - 1, benchmark: month.benchmark - 1 }));
+}
+
+function captureRatio(months, direction) {
+  const relevant = months.filter((month) => (direction === 'up' ? month.benchmark > 0 : month.benchmark < 0));
+  if (!relevant.length) return null;
+  const fundReturn = relevant.reduce((product, month) => product * (1 + month.fund), 1) - 1;
+  const benchmarkReturn = relevant.reduce((product, month) => product * (1 + month.benchmark), 1) - 1;
+  return benchmarkReturn !== 0 ? (fundReturn / benchmarkReturn) * 100 : null;
+}
+
+const riskMetrics = computed(() => {
+  if (!history.value.length || !benchmarkHistory.value.length) return null;
+  const dailyReturns = commonDailyReturns(history.value, benchmarkHistory.value, riskYears.value);
+  if (dailyReturns.length < 20) return null;
+  const fundReturns = dailyReturns.map((point) => point.fund);
+  const benchmarkReturns = dailyReturns.map((point) => point.benchmark);
+  const activeReturns = dailyReturns.map((point) => point.fund - point.benchmark);
+  const benchmarkAverage = mean(benchmarkReturns);
+  const covariance = mean(dailyReturns.map((point) => (point.fund - mean(fundReturns)) * (point.benchmark - benchmarkAverage)));
+  const benchmarkVariance = mean(benchmarkReturns.map((value) => (value - benchmarkAverage) ** 2));
+  const monthlyReturns = monthlyReturnPairs(dailyReturns);
+  // Drawdown needs the actual aligned price path, so reconstruct it from the daily return stream.
+  let fundLevel = 1;
+  let benchmarkLevel = 1;
+  const levels = [{ fund: fundLevel, benchmark: benchmarkLevel }];
+  for (const point of dailyReturns) {
+    fundLevel *= 1 + point.fund;
+    benchmarkLevel *= 1 + point.benchmark;
+    levels.push({ fund: fundLevel, benchmark: benchmarkLevel });
+  }
+  return {
+    years: riskYears.value,
+    observations: dailyReturns.length,
+    fundDrawdown: maximumDrawdown(levels, 'fund'),
+    benchmarkDrawdown: maximumDrawdown(levels, 'benchmark'),
+    annualVolatility: (sampleStandardDeviation(fundReturns) ?? 0) * Math.sqrt(252) * 100,
+    beta: benchmarkVariance > 0 ? covariance / benchmarkVariance : null,
+    trackingError: (sampleStandardDeviation(activeReturns) ?? 0) * Math.sqrt(252) * 100,
+    upsideCapture: captureRatio(monthlyReturns, 'up'),
+    downsideCapture: captureRatio(monthlyReturns, 'down'),
+  };
+});
 
 const directRegularComparison = computed(() => {
   if (!selected.value || !planPair.value || !history.value.length || !planPairHistory.value.length) return null;
@@ -652,6 +754,7 @@ async function openScheme(schemeCode) {
     planPairHistory.value = payload.plan_pair_history || [];
     selectedRange.value = '1Y';
     directRegularRange.value = '5Y';
+    riskYears.value = 3;
     if (holdingsResponse.ok) {
       const holdingsPayload = await holdingsResponse.json();
       holdings.value = holdingsPayload.holdings || [];
@@ -795,6 +898,19 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <p class="comparison-note">Fund NAV and benchmark TRI are source observations; all returns and outperformance are calculated in your browser.</p>
       </section>
       <p v-else-if="selected.benchmark_name" class="benchmark-unavailable">{{ selected.benchmark_name }} is mapped as a {{ selected.benchmark_mapping_status }} category default, but its TRI history is not yet available from the approved source.</p>
+      <section v-if="riskMetrics" class="risk-section" aria-label="Risk and resilience analysis">
+        <div class="risk-heading"><div><p class="eyebrow">Risk & resilience</p><h3>How the fund behaved on the way</h3></div><div class="range-controls"><button v-for="years in [1, 3, 5]" :key="years" :class="{ active: riskYears === years }" @click="riskYears = years">{{ years }}Y</button></div></div>
+        <div class="risk-grid">
+          <div><span>Maximum drawdown</span><strong class="negative">{{ riskMetrics.fundDrawdown === null ? '—' : `${riskMetrics.fundDrawdown.toFixed(2)}%` }}</strong><small>Fund’s largest fall from a prior peak</small></div>
+          <div><span>Benchmark drawdown</span><strong class="negative">{{ riskMetrics.benchmarkDrawdown === null ? '—' : `${riskMetrics.benchmarkDrawdown.toFixed(2)}%` }}</strong><small>On the same aligned date range</small></div>
+          <div><span>Annualised volatility</span><strong>{{ riskMetrics.annualVolatility.toFixed(2) }}%</strong><small>How much the fund’s daily returns moved</small></div>
+          <div><span>Beta</span><strong>{{ riskMetrics.beta === null ? '—' : riskMetrics.beta.toFixed(2) }}</strong><small>Market sensitivity versus benchmark</small></div>
+          <div><span>Tracking error</span><strong>{{ riskMetrics.trackingError.toFixed(2) }}%</strong><small>How differently it moved from benchmark</small></div>
+          <div><span>Upside capture</span><strong :class="{ positive: riskMetrics.upsideCapture > 100 }">{{ riskMetrics.upsideCapture === null ? '—' : `${riskMetrics.upsideCapture.toFixed(0)}%` }}</strong><small>Share of benchmark’s positive months captured</small></div>
+          <div><span>Downside capture</span><strong :class="{ positive: riskMetrics.downsideCapture < 100, negative: riskMetrics.downsideCapture > 100 }">{{ riskMetrics.downsideCapture === null ? '—' : `${riskMetrics.downsideCapture.toFixed(0)}%` }}</strong><small>Below 100% means less of benchmark’s fall</small></div>
+        </div>
+        <p class="risk-note">{{ riskMetrics.observations.toLocaleString() }} matched daily NAV/TRI observations. Capture uses compounded monthly returns.</p>
+      </section>
       <section v-if="directRegularComparison" class="direct-regular-section" aria-label="Direct versus Regular plan cost visualiser">
         <div class="direct-regular-heading"><div><p class="eyebrow">Direct vs Regular</p><h3>What the plan choice cost</h3><p>Same investment on {{ directRegularComparison.startDate }}.</p></div><div class="range-controls"><button v-for="range in Object.keys(directRegularRanges)" :key="range" :class="{ active: directRegularRange === range }" @click="directRegularRange = range">{{ range }}</button></div></div>
         <label class="investment-input" for="direct-regular-investment">Investment amount <input id="direct-regular-investment" v-model.number="directRegularInvestment" type="number" min="1" step="1000" inputmode="numeric"></label>
@@ -802,14 +918,14 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <p>Using matching Direct and Regular Growth NAV dates through {{ directRegularComparison.endDate }}. This is a comparison of NAV outcomes, not a projection.</p>
       </section>
       <section v-if="holdingsLoading || holdingPortfolio" class="holdings-section" aria-label="Portfolio holdings">
-        <div class="holdings-heading"><div><p class="eyebrow">Portfolio disclosure</p><h3>Holdings & sector allocation</h3></div><p v-if="holdingPortfolio">{{ holdingPortfolio.as_of_date }}<small>ABSL monthly disclosure</small></p></div>
+        <div class="holdings-heading"><div><p class="eyebrow">Portfolio disclosure</p><h3>Holdings & sector allocation</h3></div><p v-if="holdingPortfolio">{{ holdingPortfolio.as_of_date }}<small>{{ holdingPortfolio.amc }} monthly disclosure</small></p></div>
         <p v-if="holdingsLoading" class="holdings-message">Loading raw monthly holdings…</p>
         <template v-else>
           <div class="holdings-grid">
             <div><h4>Top holdings</h4><div class="holdings-list"><div v-for="holding in topHoldings" :key="`${holding.isin}-${holding.instrument_name}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.industry_or_rating || holding.asset_class || 'Portfolio holding' }}</small></span><b>{{ (holding.weight * 100).toFixed(2) }}%</b></div></div></div>
             <div><h4>Top sectors</h4><div class="holdings-list"><div v-for="sector in sectorAllocation" :key="sector.name"><span><strong>{{ sector.name }}</strong><small>Equity allocation</small></span><b>{{ (sector.weight * 100).toFixed(2) }}%</b></div><p v-if="!sectorAllocation.length" class="holdings-message">Sector allocation is available for equity holdings only.</p></div></div>
           </div>
-          <p class="holdings-note">Raw monthly portfolio positions supplied by ABSL. Rankings and sector totals are calculated in your browser.</p>
+          <p class="holdings-note">Raw monthly portfolio positions supplied by {{ holdingPortfolio.amc }}. Rankings and sector totals are calculated in your browser.</p>
         </template>
       </section>
       <p v-if="history.length < 2" class="message">Historical NAV is not loaded yet. Returns will appear here once the archive import is complete.</p>
@@ -847,6 +963,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <input id="scheme-search" v-model="search" @input="queueSearch" @keyup.enter="loadSchemes" placeholder="Type any part of a fund name or scheme code" autocomplete="off">
         <button :disabled="loading" @click="loadSchemes">{{ loading ? 'Searching…' : 'Search' }}</button>
       </div>
+      <div class="scheme-structure-filter"><span>Fund structure</span><div class="period-buttons"><button v-for="option in [{ value: 'all', label: 'All' }, { value: 'open', label: 'Open-ended' }, { value: 'closed', label: 'Close-ended' }]" :key="option.value" type="button" :class="{ active: schemeStructure === option.value }" :disabled="loading" @click="setSchemeStructure(option.value)">{{ option.label }}</button></div></div>
       <p v-if="error" class="message error">{{ error }}</p>
       <p v-else-if="!loading && !schemes.length" class="message">No schemes yet. Run the daily NAV importer to populate this list.</p>
       <div v-else class="results">

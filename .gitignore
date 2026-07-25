@@ -5,6 +5,7 @@ raw/
 dist/
 .env
 .logs/
+.tmp-*
 outputs/**/*.inspect.ndjson
 outputs/**/*.json
 outputs/**/*.png

@@ -27,12 +27,19 @@ app.get('/api/health', (_request, response) => {
 
 app.get('/api/schemes', (request, response) => {
   const query = String(request.query.q || '').trim();
+  const structure = String(request.query.structure || 'all').toLowerCase();
   const limit = Math.min(Math.max(Number(request.query.limit) || 50, 1), 100);
   const escapeLike = (value) => `%${value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
   const queryTerms = query.split(/\s+/).filter(Boolean).slice(0, 5);
   const nameConditions = queryTerms.length
     ? queryTerms.map(() => "s.name LIKE ? ESCAPE '\\'").join(' AND ')
     : '1 = 1';
+  const closeEndedCondition = `(LOWER(s.name) LIKE '%close ended%' OR LOWER(s.name) LIKE '%closed%' OR LOWER(s.name) LIKE '%fixed maturity%' OR LOWER(s.name) LIKE '%fmp%')`;
+  const structureCondition = structure === 'closed'
+    ? closeEndedCondition
+    : structure === 'open'
+      ? `NOT ${closeEndedCondition}`
+      : '1 = 1';
   const parameters = [query, escapeLike(query), ...queryTerms.map(escapeLike), limit];
 
   const schemes = db.prepare(`
@@ -42,6 +49,7 @@ app.get('/api/schemes', (request, response) => {
       ON latest.scheme_code = s.scheme_code
       AND latest.date = (SELECT MAX(date) FROM nav_daily WHERE scheme_code = s.scheme_code)
     WHERE (? = '' OR s.scheme_code LIKE ? ESCAPE '\\' OR (${nameConditions}))
+      AND ${structureCondition}
     ORDER BY s.name COLLATE NOCASE
     LIMIT ?
   `).all(...parameters);
@@ -101,12 +109,12 @@ app.get('/api/schemes/:schemeCode/nav-history', (request, response) => {
 
 app.get('/api/schemes/:schemeCode/holdings', (request, response) => {
   const portfolio = db.prepare(`
-    SELECT p.portfolio_id, p.name, p.source_fund_code, MAX(h.as_of_date) AS as_of_date
+    SELECT p.portfolio_id, p.amc, p.name, p.source_fund_code, MAX(h.as_of_date) AS as_of_date
     FROM scheme_portfolio_mappings m
     JOIN holding_portfolios p ON p.portfolio_id = m.portfolio_id
     JOIN portfolio_holdings h ON h.portfolio_id = p.portfolio_id
     WHERE m.scheme_code = ?
-    GROUP BY p.portfolio_id, p.name, p.source_fund_code
+    GROUP BY p.portfolio_id, p.amc, p.name, p.source_fund_code
   `).get(request.params.schemeCode);
   if (!portfolio) return response.status(404).json({ error: 'No verified monthly portfolio disclosure is available for this scheme yet.' });
 
