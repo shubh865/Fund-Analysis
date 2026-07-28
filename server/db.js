@@ -140,6 +140,64 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_scheme_aaum_periodic_period_end
     ON scheme_aaum_periodic(period_end);
 
+  -- AMFI's AAUM feed sometimes publishes a single underlying-fund identity
+  -- while the NAV feed contains separate Growth and IDCW variants. Keep that
+  -- relationship explicit instead of copying AAUM into NAV scheme records.
+  CREATE TABLE IF NOT EXISTS scheme_aaum_mappings (
+    scheme_code TEXT NOT NULL REFERENCES schemes(scheme_code),
+    source_scheme_code TEXT NOT NULL,
+    mapping_status TEXT NOT NULL CHECK(mapping_status IN ('provisional', 'verified')),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scheme_code, source_scheme_code)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_scheme_aaum_mappings_scheme_code
+    ON scheme_aaum_mappings(scheme_code);
+
+  -- AMFI's Fund Performance service provides the latest disclosed, point-in-
+  -- time scheme AUM in crore.  This is distinct from the periodic AAUM feed.
+  CREATE TABLE IF NOT EXISTS scheme_total_aum_daily (
+    source_scheme_key TEXT NOT NULL,
+    date TEXT NOT NULL,
+    scheme_name TEXT NOT NULL,
+    maturity_type TEXT,
+    category TEXT,
+    subcategory TEXT,
+    daily_aum_crore REAL,
+    riskometer_scheme TEXT,
+    riskometer_benchmark TEXT,
+    benchmark_name TEXT,
+    disclosure_marker TEXT,
+    source_url TEXT NOT NULL,
+    PRIMARY KEY (source_scheme_key, date)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_scheme_total_aum_daily_date
+    ON scheme_total_aum_daily(date);
+
+  -- Fund Performance combines Direct and Regular plans at the underlying-
+  -- fund level. Keep the relationship explicit rather than copying AUM into
+  -- NAV scheme records.
+  CREATE TABLE IF NOT EXISTS scheme_total_aum_mappings (
+    scheme_code TEXT NOT NULL REFERENCES schemes(scheme_code),
+    source_scheme_key TEXT NOT NULL,
+    mapping_status TEXT NOT NULL CHECK(mapping_status IN ('provisional', 'verified')),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (scheme_code, source_scheme_key)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_scheme_total_aum_mappings_scheme_code
+    ON scheme_total_aum_mappings(scheme_code);
+
+  -- Official RBI policy-rate observations used as the risk-free baseline for
+  -- browser-calculated risk measures such as Sharpe ratio.
+  CREATE TABLE IF NOT EXISTS risk_free_rate_daily (
+    date TEXT PRIMARY KEY,
+    annual_rate_percent REAL NOT NULL,
+    rate_name TEXT NOT NULL,
+    source_url TEXT NOT NULL
+  );
+
   -- AMFI's daily TER publication is at the underlying-scheme level and
   -- reports Regular and Direct values together.  Store the published NSDL
   -- identifier and components unmodified; do not derive or apply TER again
@@ -191,6 +249,11 @@ db.exec(`
 // Keep existing portable databases compatible as the source-data model grows.
 const schemeColumns = db.prepare('PRAGMA table_info(schemes)').all().map((column) => column.name);
 if (!schemeColumns.includes('category')) db.exec('ALTER TABLE schemes ADD COLUMN category TEXT');
+
+const totalAumColumns = db.prepare('PRAGMA table_info(scheme_total_aum_daily)').all().map((column) => column.name);
+if (!totalAumColumns.includes('riskometer_scheme')) db.exec('ALTER TABLE scheme_total_aum_daily ADD COLUMN riskometer_scheme TEXT');
+if (!totalAumColumns.includes('riskometer_benchmark')) db.exec('ALTER TABLE scheme_total_aum_daily ADD COLUMN riskometer_benchmark TEXT');
+if (!totalAumColumns.includes('benchmark_name')) db.exec('ALTER TABLE scheme_total_aum_daily ADD COLUMN benchmark_name TEXT');
 
 // AMFI added NSDL scheme codes to its newer TER format.  Older official TER
 // records do not have them, so migrate the original table to a source-key

@@ -6,7 +6,10 @@ function normalizeFundName(name) {
   return String(name || '')
     .toLowerCase()
     .replace(/&/g, ' and ')
-    .replace(/\b(direct|regular|growth|idcw|dividend|payout|reinvestment|bonus|plan|option)\b/g, ' ')
+    .replace(/\bflexicap\b/g, 'flexi cap')
+    .replace(/\bmidcap\b/g, 'mid cap')
+    .replace(/\bowsal\b/g, 'oswal')
+    .replace(/\b(direct|regular|standard|eco|growth|idcw|dividend|income|distribution|cum|capital|withdrawal|payout|reinvestment|bonus|plan|option|fund)\b/g, ' ')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ');
@@ -16,7 +19,10 @@ function planType(name) {
   const normalized = String(name || '').toLowerCase();
   if (/\bdirect\b/.test(normalized)) return 'direct';
   if (/\bregular\b/.test(normalized)) return 'regular';
-  return null;
+  // Older NAV identities pre-date Direct plans. AMFI's TER source still
+  // provides a Regular value for them, so use it only when a unique source
+  // identity is found below.
+  return 'regular';
 }
 
 const terSources = db.prepare(`
