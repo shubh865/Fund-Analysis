@@ -319,4 +319,50 @@ app.get('/api/categories/:category/peer-nav-history', (request, response) => {
   response.json({ category, categories: requestedCategories, plan, benchmark, schemes, histories, benchmark_history: benchmarkHistory });
 });
 
+app.get('/api/categories/:category/category-nav-history', (request, response) => {
+  const category = request.params.category;
+  const plan = String(request.query.plan || 'all-growth');
+  const excludeScheme = String(request.query.excludeScheme || '');
+  if (!['direct', 'regular', 'all-growth', 'direct-idcw', 'regular-idcw'].includes(plan)) {
+    return response.status(400).json({ error: 'plan must be direct, regular, all-growth, direct-idcw, or regular-idcw' });
+  }
+  const growthOnly = "LOWER(s.name) LIKE '%growth%' AND LOWER(s.name) NOT LIKE '%idcw%' AND LOWER(s.name) NOT LIKE '%dividend%' AND LOWER(s.name) NOT LIKE '%payout%' AND LOWER(s.name) NOT LIKE '%reinvestment%' AND LOWER(s.name) NOT LIKE '%bonus%'";
+  const idcwOnly = "(LOWER(s.name) LIKE '%idcw%' OR LOWER(s.name) LIKE '%income distribution%' OR LOWER(s.name) LIKE '%dividend%')";
+  const planCondition = plan === 'direct'
+    ? `${growthOnly} AND LOWER(s.name) LIKE '%direct%'`
+    : plan === 'regular'
+      ? `${growthOnly} AND LOWER(s.name) NOT LIKE '%direct%'`
+      : plan === 'direct-idcw'
+        ? `${idcwOnly} AND LOWER(s.name) LIKE '%direct%'`
+        : plan === 'regular-idcw'
+          ? `${idcwOnly} AND LOWER(s.name) NOT LIKE '%direct%'`
+          : growthOnly;
+  // Raw daily NAV observations only. Six years covers the 1/3/5Y selector,
+  // while the equal-weighted peer category series is calculated in the browser.
+  const schemes = db.prepare(`
+    SELECT s.scheme_code
+    FROM schemes s
+    WHERE s.category = ?
+      AND s.scheme_code <> ?
+      AND ${planCondition}
+      AND EXISTS (
+        SELECT 1 FROM nav_daily n
+        WHERE n.scheme_code = s.scheme_code
+          AND n.date >= (SELECT date(MAX(date), '-6 years') FROM nav_daily)
+      )
+  `).all(category, excludeScheme);
+  const navRows = schemes.length
+    ? db.prepare(`
+      SELECT scheme_code, date, nav
+      FROM nav_daily
+      WHERE scheme_code IN (${schemes.map(() => '?').join(', ')})
+        AND date >= (SELECT date(MAX(date), '-6 years') FROM nav_daily)
+      ORDER BY scheme_code, date
+    `).all(...schemes.map((scheme) => scheme.scheme_code))
+    : [];
+  const histories = Object.fromEntries(schemes.map((scheme) => [scheme.scheme_code, []]));
+  for (const row of navRows) histories[row.scheme_code]?.push({ date: row.date, nav: row.nav });
+  response.json({ category, plan, peer_count: schemes.length, histories });
+});
+
 app.listen(port, () => console.log(`API listening on http://localhost:${port}`));

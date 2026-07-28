@@ -13,6 +13,8 @@ const selected = ref(null);
 const history = ref([]);
 const benchmarkHistory = ref([]);
 const riskFreeRates = ref([]);
+const categoryPeerHistories = ref({});
+const categoryCaptureLoading = ref(false);
 const planPair = ref(null);
 const planPairHistory = ref([]);
 const holdings = ref([]);
@@ -646,13 +648,64 @@ function monthlyReturnPairs(dailyReturns) {
   return [...months.values()].map((month) => ({ fund: month.fund - 1, benchmark: month.benchmark - 1 }));
 }
 
-function captureRatio(months, direction) {
-  const relevant = months.filter((month) => (direction === 'up' ? month.benchmark > 0 : month.benchmark < 0));
+function captureRatio(months, direction, comparisonKey = 'benchmark') {
+  const relevant = months.filter((month) => (direction === 'up' ? month[comparisonKey] > 0 : month[comparisonKey] < 0));
   if (!relevant.length) return null;
   const fundReturn = relevant.reduce((product, month) => product * (1 + month.fund), 1) - 1;
-  const benchmarkReturn = relevant.reduce((product, month) => product * (1 + month.benchmark), 1) - 1;
-  return benchmarkReturn !== 0 ? (fundReturn / benchmarkReturn) * 100 : null;
+  const comparisonReturn = relevant.reduce((product, month) => product * (1 + month[comparisonKey]), 1) - 1;
+  return comparisonReturn !== 0 ? (fundReturn / comparisonReturn) * 100 : null;
 }
+
+function categoryMonthlyReturnPairs(fundHistory, peerHistories, years) {
+  if (!fundHistory.length || !Object.keys(peerHistories || {}).length) return [];
+  const cutoff = subtractCalendarYears(fundHistory.at(-1).date, years);
+  const peerDailyReturns = new Map();
+  for (const peerHistory of Object.values(peerHistories)) {
+    for (let index = 1; index < peerHistory.length; index += 1) {
+      const previous = peerHistory[index - 1];
+      const current = peerHistory[index];
+      const value = (current.nav / previous.nav) - 1;
+      if (!Number.isFinite(value) || current.date < cutoff) continue;
+      const entries = peerDailyReturns.get(current.date) || [];
+      entries.push(value);
+      peerDailyReturns.set(current.date, entries);
+    }
+  }
+  const fundDailyReturnsByDate = new Map();
+  for (let index = 1; index < fundHistory.length; index += 1) {
+    const previous = fundHistory[index - 1];
+    const current = fundHistory[index];
+    const value = (current.nav / previous.nav) - 1;
+    if (Number.isFinite(value) && current.date >= cutoff) fundDailyReturnsByDate.set(current.date, value);
+  }
+  const months = new Map();
+  for (const [date, fund] of fundDailyReturnsByDate) {
+    const peerReturns = peerDailyReturns.get(date);
+    if (!peerReturns?.length) continue;
+    const key = date.slice(0, 7);
+    const prior = months.get(key) || { fund: 1, category: 1 };
+    months.set(key, { fund: prior.fund * (1 + fund), category: prior.category * (1 + mean(peerReturns)) });
+  }
+  return [...months.values()].map((month) => ({ fund: month.fund - 1, category: month.category - 1 }));
+}
+
+function selectedCategoryPlan(name) {
+  const normalized = String(name || '').toLowerCase();
+  const direct = /\bdirect\b/.test(normalized);
+  const idcw = /\b(idcw|dividend|payout|reinvestment|bonus)\b/.test(normalized);
+  if (idcw) return direct ? 'direct-idcw' : 'regular-idcw';
+  return direct ? 'direct' : 'regular';
+}
+
+const categoryCapture = computed(() => {
+  const months = categoryMonthlyReturnPairs(history.value, categoryPeerHistories.value, riskYears.value);
+  if (months.length < 3) return null;
+  return {
+    months: months.length,
+    upside: captureRatio(months, 'up', 'category'),
+    downside: captureRatio(months, 'down', 'category'),
+  };
+});
 
 const riskMetrics = computed(() => {
   if (!history.value.length) return null;
@@ -908,6 +961,8 @@ async function openScheme(schemeCode) {
   fundSnapshotLoading.value = true;
   debtQuartile.value = null;
   debtQuartileLoading.value = false;
+  categoryPeerHistories.value = {};
+  categoryCaptureLoading.value = false;
   try {
     const [response, holdingsResponse, snapshotResponse] = await Promise.all([
       fetch(`/api/schemes/${encodeURIComponent(schemeCode)}/nav-history`),
@@ -925,6 +980,15 @@ async function openScheme(schemeCode) {
     selectedRange.value = '1Y';
     directRegularRange.value = '5Y';
     riskYears.value = 3;
+    if (payload.scheme.category) {
+      categoryCaptureLoading.value = true;
+      try {
+        const peerResponse = await fetch(`/api/categories/${encodeURIComponent(payload.scheme.category)}/category-nav-history?plan=${encodeURIComponent(selectedCategoryPlan(payload.scheme.name))}&excludeScheme=${encodeURIComponent(payload.scheme.scheme_code)}`);
+        if (peerResponse.ok) categoryPeerHistories.value = (await peerResponse.json()).histories || {};
+      } finally {
+        categoryCaptureLoading.value = false;
+      }
+    }
     if (/^debt scheme\b/i.test(payload.scheme.category || '')) {
       debtQuartileLoading.value = true;
       try {
@@ -960,6 +1024,7 @@ function closeDetail() {
   holdingPortfolio.value = null;
   fundSnapshot.value = { aaum: [], ter: [] };
   debtQuartile.value = null;
+  categoryPeerHistories.value = {};
 }
 
 onMounted(async () => {
@@ -1095,8 +1160,10 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
           <div><span>Tracking error</span><strong>{{ riskMetrics.trackingError === null ? '—' : `${riskMetrics.trackingError.toFixed(2)}%` }}</strong><small>How differently it moved from benchmark</small></div>
           <div><span>Upside capture</span><strong :class="{ positive: riskMetrics.upsideCapture > 100 }">{{ riskMetrics.upsideCapture === null ? '—' : `${riskMetrics.upsideCapture.toFixed(0)}%` }}</strong><small>Share of benchmark’s positive months captured</small></div>
           <div><span>Downside capture</span><strong :class="{ positive: riskMetrics.downsideCapture < 100, negative: riskMetrics.downsideCapture > 100 }">{{ riskMetrics.downsideCapture === null ? '—' : `${riskMetrics.downsideCapture.toFixed(0)}%` }}</strong><small>Below 100% means less of benchmark’s fall</small></div>
+          <div><span>Category upside capture</span><strong :class="{ positive: categoryCapture?.upside > 100 }">{{ categoryCaptureLoading ? '…' : categoryCapture?.upside === null || !categoryCapture ? '—' : `${categoryCapture.upside.toFixed(0)}%` }}</strong><small>Versus same-category {{ selectedCategoryPlan(selected.name).includes('direct') ? 'Direct' : 'Regular' }} peers</small></div>
+          <div><span>Category downside capture</span><strong :class="{ positive: categoryCapture?.downside < 100, negative: categoryCapture?.downside > 100 }">{{ categoryCaptureLoading ? '…' : categoryCapture?.downside === null || !categoryCapture ? '—' : `${categoryCapture.downside.toFixed(0)}%` }}</strong><small>Below 100% means less of the category fall</small></div>
         </div>
-        <p class="risk-note">{{ riskMetrics.observations.toLocaleString() }} daily NAV observations. Sharpe uses the official RBI Repo Rate as its risk-free baseline; benchmark measures and capture use matched NAV/TRI observations.</p>
+        <p class="risk-note">{{ riskMetrics.observations.toLocaleString() }} daily NAV observations. Sharpe uses the official RBI Repo Rate as its risk-free baseline. Category capture is calculated from the equal-weighted monthly returns of comparable same-category plans, excluding this fund.</p>
       </section>
       <section v-else class="risk-section risk-unavailable" aria-label="Risk and resilience availability">
         <div class="risk-heading"><div><p class="eyebrow">Risk & resilience</p><h3>How the fund behaved on the way</h3></div></div>
