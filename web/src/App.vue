@@ -33,13 +33,7 @@ const directRegularInvestment = ref(100000);
 const riskYears = ref(3);
 const view = ref('schemes');
 const categories = ref([]);
-const selectedCategory = ref('');
-const categorySearch = ref('');
-const categoryYears = ref(1);
-const categoryAsOf = ref('');
 const latestNavMonth = ref('');
-const categoryRows = ref([]);
-const categoryLoading = ref(false);
 const quartileMainCategory = ref('');
 const quartileCategory = ref('');
 const quartileYears = ref(1);
@@ -86,46 +80,7 @@ async function loadCategories() {
   const payload = await response.json();
   categories.value = payload.categories;
   latestNavMonth.value = payload.latest_nav_date?.slice(0, 7) || '';
-  if (!categoryAsOf.value) categoryAsOf.value = latestNavMonth.value;
   if (!quartileAsOf.value) quartileAsOf.value = latestNavMonth.value;
-}
-
-async function loadCategoryRanking() {
-  if (!selectedCategory.value) return;
-  categoryLoading.value = true;
-  error.value = '';
-  try {
-    const response = await fetch(`/api/categories/${encodeURIComponent(selectedCategory.value)}/nav-snapshot?years=${categoryYears.value}&asOf=${encodeURIComponent(categoryAsOf.value)}`);
-    if (!response.ok) throw new Error('Could not load category NAV data.');
-    categoryRows.value = (await response.json()).schemes;
-  } catch (requestError) {
-    error.value = requestError.message;
-  } finally {
-    categoryLoading.value = false;
-  }
-}
-
-const categoryRankings = computed(() => categoryRows.value
-  .filter((row) => Number.isFinite(row.latest_nav) && Number.isFinite(row.start_nav) && row.start_nav > 0)
-  .map((row) => {
-    const totalReturn = row.latest_nav / row.start_nav;
-    const elapsedDays = (Date.parse(`${row.latest_date}T00:00:00Z`) - Date.parse(`${row.start_date}T00:00:00Z`)) / 86_400_000;
-    const returnValue = categoryYears.value === 1
-      ? (totalReturn - 1) * 100
-      : (Math.pow(totalReturn, 365.2425 / elapsedDays) - 1) * 100;
-    return { ...row, returnValue };
-  })
-  .filter((row) => Number.isFinite(row.returnValue))
-  .sort((left, right) => right.returnValue - left.returnValue));
-
-const filteredCategories = computed(() => {
-  const terms = categorySearch.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  return categories.value.filter((category) => terms.every((term) => category.category.toLowerCase().includes(term)));
-});
-
-function setCategoryYears(years) {
-  categoryYears.value = years;
-  loadCategoryRanking();
 }
 
 // AMFI has both current and legacy category labels. The raw label stays in
@@ -277,13 +232,6 @@ const quartileTables = computed(() => {
     rows: topTwentyAmcs.filter((_, index) => Math.min(3, Math.floor(index * 4 / topTwentyAmcs.length)) === quartile),
   }));
 });
-
-async function showCategories() {
-  view.value = 'categories';
-  if (!categories.value.length) {
-    try { await loadCategories(); } catch (requestError) { error.value = requestError.message; }
-  }
-}
 
 async function showQuartiles() {
   view.value = 'quartiles';
@@ -1123,29 +1071,10 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
     <header>
       <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
-      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="view = 'schemes'">Schemes</button><button :class="{ active: view === 'categories' }" @click="showCategories">Categories</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button></div>
+      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="view = 'schemes'">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button></div>
     </header>
 
-    <section v-if="view === 'categories' && !selected" class="card category-browser" aria-label="Category rankings">
-      <div class="category-controls">
-        <label for="category-search">Search categories</label>
-        <input id="category-search" v-model="categorySearch" placeholder="For example: flexi cap, liquid, small cap">
-        <label for="category-select">Choose a category</label>
-        <select id="category-select" v-model="selectedCategory" @change="loadCategoryRanking"><option value="">Select a category</option><option v-for="category in filteredCategories" :key="category.category" :value="category.category">{{ category.category }} ({{ category.scheme_count }})</option></select>
-        <label for="category-as-of">As of month</label>
-        <input id="category-as-of" v-model="categoryAsOf" type="month" :max="latestNavMonth" @change="loadCategoryRanking">
-        <div class="period-buttons" aria-label="Return period"><button v-for="years in [1, 3, 5]" :key="years" type="button" :class="{ active: categoryYears === years }" :disabled="!selectedCategory" @click="setCategoryYears(years)">{{ years }}Y{{ years > 1 ? ' CAGR' : '' }}</button></div>
-      </div>
-      <p v-if="error" class="message error">{{ error }}</p>
-      <p v-else-if="!selectedCategory" class="message">Choose a category to rank its schemes by return.</p>
-      <p v-else-if="categoryLoading" class="message">Loading raw NAV observations…</p>
-      <div v-else class="rankings">
-        <div class="ranking-head"><span>Rank</span><span>Scheme</span><span>{{ categoryYears }}Y{{ categoryYears > 1 ? ' CAGR' : ' return' }}</span></div>
-        <button v-for="(scheme, index) in categoryRankings" :key="scheme.scheme_code" class="ranking-row" @click="openScheme(scheme.scheme_code)"><span>{{ index + 1 }}</span><span><strong>{{ scheme.name }}</strong><small>{{ scheme.amc }}</small></span><span :class="{ positive: scheme.returnValue > 0, negative: scheme.returnValue < 0 }">{{ scheme.returnValue >= 0 ? '+' : '' }}{{ scheme.returnValue.toFixed(2) }}%</span></button>
-      </div>
-    </section>
-
-    <section v-else-if="view === 'quartiles' && !selected" class="card category-browser quartile-browser" aria-label="Category quartiles">
+    <section v-if="view === 'quartiles' && !selected" class="card category-browser quartile-browser" aria-label="Category quartiles">
       <div class="category-controls">
         <label for="quartile-main-category">Category</label>
         <select id="quartile-main-category" v-model="quartileMainCategory" @change="selectQuartileMainCategory"><option value="">Select a category</option><option v-for="category in quartileMainCategories" :key="category" :value="category">{{ category }}</option></select>
