@@ -797,21 +797,106 @@ const directRegularComparison = computed(() => {
   };
 });
 
-const topHoldings = computed(() => holdings.value
-  .filter((holding) => Number.isFinite(holding.weight) && holding.weight > 0)
+function disclosureLabel(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isDisclosureSummaryRow(holding) {
+  const name = disclosureLabel(holding.instrument_name);
+  return !name
+    || /^(?:net assets?|total|sub.?total|benchmark|nav as on|as on\b|number of contracts?|gross notional|at the end|instrument type|% of investment)/i.test(name)
+    || /returns?\s*\(\s*annualised\s*\)/i.test(name);
+}
+
+function isNonSectorLabel(value) {
+  const label = disclosureLabel(value);
+  if (!label) return true;
+  return /^(?:n\.?a\.?|na|0|-|others?|portfolio holding|sov(?:ereign)?|long|short)$/i.test(label)
+    || /^(?:as on|nav as on|number of contracts?|gross notional|net receivable|current (?:option )?price|option price|futures? price|benchmark|instrument type|% of investment|at the end)/i.test(label)
+    || /(?:\bA1\+?\b|\bAAA\b|\bAA[+-]?\b|\bBBB[+-]?\b|\bSOVEREIGN\b)/i.test(label)
+    || /^-?\d+(?:\.\d+)?$/.test(label)
+    || /(?:repo|cash|money market|net current|mutual fund|ETF units?|debt|derivative|T-?bill|government securit)/i.test(label);
+}
+
+function disclosedSector(holding) {
+  const industry = disclosureLabel(holding.industry_or_rating);
+  if (!isNonSectorLabel(industry)) return industry;
+  const assetClass = disclosureLabel(holding.asset_class);
+  if (!isNonSectorLabel(assetClass) && !/^equity(?:\s+shares?|(?:\s*&\s*equity related).*)?$/i.test(assetClass)) return assetClass;
+  return null;
+}
+
+function sectorKey(value) {
+  return value.toLowerCase().replace(/\band\b/g, '&').replace(/\s+/g, ' ').trim();
+}
+
+const usableHoldings = computed(() => holdings.value
+  .filter((holding) => Number.isFinite(holding.weight)
+    && holding.weight > 0
+    && holding.weight <= 1.05
+    && !isDisclosureSummaryRow(holding)));
+
+const topHoldings = computed(() => usableHoldings.value
   .sort((left, right) => right.weight - left.weight)
   .slice(0, 10));
 
 const sectorAllocation = computed(() => {
   const sectors = new Map();
-  for (const holding of holdings.value) {
-    if (!holding.asset_class?.toLowerCase().startsWith('equity') || !holding.industry_or_rating || !Number.isFinite(holding.weight)) continue;
-    sectors.set(holding.industry_or_rating, (sectors.get(holding.industry_or_rating) || 0) + holding.weight);
+  for (const holding of usableHoldings.value) {
+    const name = disclosedSector(holding);
+    if (!name) continue;
+    const key = sectorKey(name);
+    const sector = sectors.get(key) || { name, weight: 0 };
+    sector.weight += holding.weight;
+    sectors.set(key, sector);
   }
-  return [...sectors.entries()]
-    .map(([name, weight]) => ({ name, weight }))
+  return [...sectors.values()]
     .sort((left, right) => right.weight - left.weight)
     .slice(0, 10);
+});
+
+function maturityDateFromHolding(name) {
+  const match = String(name || '').match(/\((\d{1,2})\/(\d{1,2})\/(\d{4})\)/);
+  if (!match) return null;
+  const date = new Date(Date.UTC(Number(match[3]), Number(match[2]) - 1, Number(match[1])));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function creditBucket(value) {
+  const rating = String(value || '').toUpperCase();
+  if (/SOVEREIGN|GOVERNMENT|T-?BILL|TREPS|REPO/.test(rating)) return 'Sovereign / cash';
+  const match = rating.match(/\b(AAA|AA\+|AA|AA-|A\+|A|A-|BBB\+|BBB|BBB-|BB\+|BB|BB-|B\+|B|B-)\b/);
+  return match ? match[1] : null;
+}
+
+const debtPortfolioStats = computed(() => {
+  if (!isDebtScheme.value || !holdingPortfolio.value) return null;
+  const asOf = new Date(`${holdingPortfolio.value.as_of_date}T00:00:00Z`);
+  let yieldWeight = 0;
+  let weightedYield = 0;
+  let maturityWeight = 0;
+  let weightedYears = 0;
+  const ratings = new Map();
+  for (const holding of holdings.value) {
+    if (!Number.isFinite(holding.weight) || holding.weight <= 0) continue;
+    if (Number.isFinite(holding.yield)) {
+      weightedYield += holding.yield * holding.weight;
+      yieldWeight += holding.weight;
+    }
+    const maturity = maturityDateFromHolding(holding.instrument_name);
+    if (maturity && maturity > asOf) {
+      weightedYears += ((maturity - asOf) / 86_400_000 / 365.2425) * holding.weight;
+      maturityWeight += holding.weight;
+    }
+    const bucket = creditBucket(holding.industry_or_rating);
+    if (bucket) ratings.set(bucket, (ratings.get(bucket) || 0) + holding.weight);
+  }
+  return {
+    weightedYield: yieldWeight > 0 ? weightedYield / yieldWeight : null,
+    weightedResidualMaturity: maturityWeight > 0 ? weightedYears / maturityWeight : null,
+    ratedWeight: [...ratings.values()].reduce((sum, value) => sum + value, 0),
+    ratings: [...ratings.entries()].map(([name, weight]) => ({ name, weight })).sort((left, right) => right.weight - left.weight).slice(0, 8),
+  };
 });
 
 const aaumHistory = computed(() => fundSnapshot.value.aaum || []);
@@ -1189,14 +1274,20 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <p>Using matching Direct and Regular Growth NAV dates through {{ directRegularComparison.endDate }}. This is a comparison of NAV outcomes, not a projection.</p>
       </section>
       <section v-if="holdingsLoading || holdingPortfolio" class="holdings-section" aria-label="Portfolio holdings">
-        <div class="holdings-heading"><div><p class="eyebrow">Portfolio disclosure</p><h3>Holdings & sector allocation</h3></div><p v-if="holdingPortfolio">{{ holdingPortfolio.as_of_date }}<small>{{ holdingPortfolio.amc }} monthly disclosure</small></p></div>
+        <div class="holdings-heading"><div><p class="eyebrow">Portfolio disclosure</p><h3>{{ debtPortfolioStats ? 'Holdings & credit quality' : 'Holdings & sector allocation' }}</h3></div><p v-if="holdingPortfolio">{{ holdingPortfolio.as_of_date }}<small>{{ holdingPortfolio.amc }} monthly disclosure</small></p></div>
         <p v-if="holdingsLoading" class="holdings-message">Loading raw monthly holdings…</p>
         <template v-else>
+          <div v-if="debtPortfolioStats" class="debt-portfolio-summary">
+            <div><span>Weighted holding yield</span><strong>{{ debtPortfolioStats.weightedYield === null ? '—' : `${(debtPortfolioStats.weightedYield * 100).toFixed(2)}%` }}</strong><small>Weighted from disclosed security yields</small></div>
+            <div><span>Weighted residual maturity</span><strong>{{ debtPortfolioStats.weightedResidualMaturity === null ? '—' : `${debtPortfolioStats.weightedResidualMaturity.toFixed(1)} years` }}</strong><small>Calculated from disclosed maturity dates</small></div>
+            <div><span>Rated exposure</span><strong>{{ `${(debtPortfolioStats.ratedWeight * 100).toFixed(1)}%` }}</strong><small>Positions with a recognised credit rating</small></div>
+          </div>
           <div class="holdings-grid">
             <div><h4>Top holdings</h4><div class="holdings-list"><div v-for="holding in topHoldings" :key="`${holding.isin}-${holding.instrument_name}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.industry_or_rating || holding.asset_class || 'Portfolio holding' }}</small></span><b>{{ (holding.weight * 100).toFixed(2) }}%</b></div></div></div>
-            <div><h4>Top sectors</h4><div class="holdings-list"><div v-for="sector in sectorAllocation" :key="sector.name"><span><strong>{{ sector.name }}</strong><small>Equity allocation</small></span><b>{{ (sector.weight * 100).toFixed(2) }}%</b></div><p v-if="!sectorAllocation.length" class="holdings-message">Sector allocation is available for equity holdings only.</p></div></div>
+            <div v-if="debtPortfolioStats"><h4>Credit-quality allocation</h4><div class="holdings-list"><div v-for="rating in debtPortfolioStats.ratings" :key="rating.name"><span><strong>{{ rating.name }}</strong><small>Portfolio exposure</small></span><b>{{ (rating.weight * 100).toFixed(2) }}%</b></div><p v-if="!debtPortfolioStats.ratings.length" class="holdings-message">No recognised credit ratings in this disclosure.</p></div></div>
+            <div v-else><h4>Top sectors</h4><div class="holdings-list"><div v-for="sector in sectorAllocation" :key="sector.name"><span><strong>{{ sector.name }}</strong><small>Equity allocation</small></span><b>{{ (sector.weight * 100).toFixed(2) }}%</b></div><p v-if="!sectorAllocation.length" class="holdings-message">Sector allocation is available for equity holdings only.</p></div></div>
           </div>
-          <p class="holdings-note">Raw monthly portfolio positions supplied by {{ holdingPortfolio.amc }}. Rankings and sector totals are calculated in your browser.</p>
+          <p class="holdings-note">Raw monthly portfolio positions supplied by {{ holdingPortfolio.amc }}. Rankings, credit buckets and weighted measures are calculated in your browser.</p>
         </template>
       </section>
       <p v-if="history.length < 2" class="message">Historical NAV is not loaded yet. Returns will appear here once the archive import is complete.</p>

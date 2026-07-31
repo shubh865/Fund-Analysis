@@ -38,3 +38,6 @@ body::before { position: fixed; z-index: -1; inset: 0; content: ''; background: 
 @media (max-width: 700px) { .scheme-filter-panel { margin-inline: 18px; }.scheme-navigation-filters { grid-template-columns: 1fr; gap: 11px; } }
 
 .compare-matrix { min-width: 1060px; }.compare-matrix-head, .compare-matrix-row { grid-template-columns: minmax(250px, 1.7fr) 76px 108px 70px 86px 86px 86px 86px 86px 32px; gap: 8px; }
+
+.debt-portfolio-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; margin: 0 0 14px; border: 1px solid #dfe5de; border-radius: 9px; background: #fffefa; }.debt-portfolio-summary > div { display: grid; gap: 6px; padding: 12px; border-right: 1px solid #e8ebe5; }.debt-portfolio-summary > div:last-child { border-right: 0; }.debt-portfolio-summary span, .debt-portfolio-summary small { color: #7b857d; font: 9px 'DM Mono', monospace; }.debt-portfolio-summary strong { color: #2c493b; font: 600 15px 'DM Mono', monospace; }.debt-portfolio-summary small { line-height: 1.4; }
+@media (max-width: 700px) { .debt-portfolio-summary { grid-template-columns: 1fr; }.debt-portfolio-summary > div { border-right: 0; border-bottom: 1px solid #e8ebe5; }.debt-portfolio-summary > div:last-child { border-bottom: 0; } }

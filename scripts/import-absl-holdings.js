@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const XLSX = require('xlsx');
 const db = require('../server/db');
+const { normalizeHoldings } = require('./lib/portfolio-normalization');
 
 const [inputPath, ...args] = process.argv.slice(2);
 if (!inputPath || inputPath.startsWith('--')) {
@@ -99,14 +100,9 @@ const importWorkbook = db.transaction(() => {
     if (!disclosureDate) disclosureDate = date;
     if (disclosureDate !== date) throw new Error(`Mixed disclosure dates found: ${disclosureDate} and ${date}.`);
 
-    portfolioUpsert.run({ fundCode, name, description: description || null });
-    const portfolioId = portfolioFind.get(fundCode).portfolio_id;
-    deletePositions.run(portfolioId, date);
-    portfolioCount += 1;
-
+    const holdings = [];
     let assetClass = null;
     let holdingGroup = null;
-    let positionOrder = 0;
     for (const row of rows.slice(4)) {
       // Column A is deliberately blank in ABSL's disclosure sheets; holdings
       // begin in column B, while the fund code itself lives in cell A1.
@@ -128,13 +124,7 @@ const importWorkbook = db.transaction(() => {
       const weight = number(row[6]);
       if (quantity == null && marketValueLakh == null && weight == null) continue;
 
-      positionOrder += 1;
-      positionInsert.run({
-        portfolioId,
-        asOfDate: date,
-        positionOrder,
-        assetClass,
-        holdingGroup,
+      holdings.push({
         instrumentName,
         isin: text(row[2]) || null,
         industryOrRating: text(row[3]) || null,
@@ -143,9 +133,26 @@ const importWorkbook = db.transaction(() => {
         weight,
         yield: number(row[7]),
         yieldToCall: number(row[8]),
+        assetClass,
+        holdingGroup,
+      });
+    }
+
+    const normalizedHoldings = normalizeHoldings(holdings, name);
+    if (!normalizedHoldings.length) continue;
+    portfolioUpsert.run({ fundCode, name, description: description || null });
+    const portfolioId = portfolioFind.get(fundCode).portfolio_id;
+    deletePositions.run(portfolioId, date);
+    portfolioCount += 1;
+    normalizedHoldings.forEach((holding, index) => {
+      positionInsert.run({
+        portfolioId,
+        asOfDate: date,
+        positionOrder: index + 1,
+        ...holding,
       });
       holdingCount += 1;
-    }
+    });
   }
 
   if (!disclosureDate) throw new Error('No portfolio worksheets with a recognised disclosure date were found.');

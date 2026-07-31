@@ -1,6 +1,7 @@
 const path = require('node:path');
 const XLSX = require('xlsx');
 const db = require('../server/db');
+const { normalizeHoldings } = require('./lib/portfolio-normalization');
 
 const AMC = 'SBI Mutual Fund';
 const DEFAULT_SOURCE_URL = 'https://www.sbimf.com/portfolios';
@@ -85,7 +86,7 @@ function parseSheet(workbook, sheetName, index) {
       yieldToCall: number(row[9]),
     });
   }
-  return { ...details, date, holdings };
+  return { ...details, date, holdings: normalizeHoldings(holdings, details.name) };
 }
 
 const workbook = XLSX.readFile(path.resolve(inputFile), { cellDates: false });
