@@ -56,6 +56,10 @@ const peerBenchmarkHistoryAvailable = ref(false);
 const peerLoading = ref(false);
 const peerSort = ref({ key: 'alpha', direction: 'desc' });
 const analysisMode = ref('peers');
+const overlapSearch = ref('');
+const overlapResults = ref([]);
+const overlapSelection = ref([]);
+const overlapLoading = ref(false);
 let searchTimer;
 
 const displaySchemes = computed(() => schemes.value.slice(0, 50));
@@ -348,6 +352,12 @@ async function showPeerAnalysis() {
   }
 }
 
+function showPortfolioOverlap() {
+  closeDetail();
+  view.value = 'overlap';
+  overlapResults.value = [];
+}
+
 function showSchemes() {
   closeDetail();
   view.value = 'schemes';
@@ -509,6 +519,51 @@ async function addToComparison(scheme) {
 
 function removeFromComparison(schemeCode) {
   compareSelection.value = compareSelection.value.filter((item) => item.scheme.scheme_code !== schemeCode);
+}
+
+async function searchPortfolioOverlap() {
+  const query = overlapSearch.value.trim();
+  if (query.length < 2) return;
+  overlapLoading.value = true;
+  error.value = '';
+  try {
+    const response = await fetch(`/api/schemes?q=${encodeURIComponent(query)}&limit=12&plan=growth`);
+    if (!response.ok) throw new Error('Could not search schemes for portfolio overlap.');
+    overlapResults.value = (await response.json()).schemes;
+  } catch (requestError) {
+    error.value = requestError.message;
+  } finally {
+    overlapLoading.value = false;
+  }
+}
+
+async function addToPortfolioOverlap(scheme) {
+  if (overlapSelection.value.some((item) => item.scheme.scheme_code === scheme.scheme_code) || overlapSelection.value.length >= 2) return;
+  overlapLoading.value = true;
+  error.value = '';
+  try {
+    const response = await fetch(`/api/schemes/${encodeURIComponent(scheme.scheme_code)}/holdings`);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || 'No verified monthly portfolio disclosure is available for this scheme yet.');
+    }
+    const payload = await response.json();
+    overlapSelection.value = [...overlapSelection.value, {
+      scheme,
+      portfolio: payload.portfolio,
+      holdings: payload.holdings || [],
+    }];
+    overlapSearch.value = '';
+    overlapResults.value = [];
+  } catch (requestError) {
+    error.value = requestError.message;
+  } finally {
+    overlapLoading.value = false;
+  }
+}
+
+function removeFromPortfolioOverlap(schemeCode) {
+  overlapSelection.value = overlapSelection.value.filter((item) => item.scheme.scheme_code !== schemeCode);
 }
 
 function queueSearch() {
@@ -945,6 +1000,100 @@ const sectorAllocation = computed(() => {
     .slice(0, 10);
 });
 
+function overlapHoldings(rows) {
+  return rows.filter((holding) => Number.isFinite(holding.weight)
+    && holding.weight > 0
+    && holding.weight <= 5
+    && holding.isin
+    && !isDisclosureSummaryRow(holding)
+    && !isDerivativeDisclosureRow(holding));
+}
+
+function holdingByIsin(rows) {
+  const mapped = new Map();
+  for (const holding of overlapHoldings(rows)) {
+    const key = String(holding.isin).trim().toUpperCase();
+    if (!key) continue;
+    const current = mapped.get(key);
+    if (!current || holding.weight > current.weight) mapped.set(key, holding);
+  }
+  return mapped;
+}
+
+function allocationBySector(rows) {
+  const allocations = new Map();
+  for (const holding of overlapHoldings(rows)) {
+    const name = disclosedSector(holding);
+    if (!name) continue;
+    const key = sectorKey(name);
+    const current = allocations.get(key) || { name, weight: 0 };
+    current.weight += holding.weight;
+    allocations.set(key, current);
+  }
+  return allocations;
+}
+
+function topTenWeight(rows) {
+  return overlapHoldings(rows)
+    .sort((left, right) => right.weight - left.weight)
+    .slice(0, 10)
+    .reduce((total, holding) => total + holding.weight, 0);
+}
+
+function topTenHoldings(rows) {
+  return overlapHoldings(rows)
+    .sort((left, right) => right.weight - left.weight)
+    .slice(0, 10);
+}
+
+const portfolioOverlap = computed(() => {
+  if (overlapSelection.value.length !== 2) return null;
+  const [left, right] = overlapSelection.value;
+  const leftByIsin = holdingByIsin(left.holdings);
+  const rightByIsin = holdingByIsin(right.holdings);
+  const commonHoldings = [];
+  let sharedWeight = 0;
+  let leftSharedWeight = 0;
+  let rightSharedWeight = 0;
+  for (const [isin, leftHolding] of leftByIsin) {
+    const rightHolding = rightByIsin.get(isin);
+    if (!rightHolding) continue;
+    const commonWeight = Math.min(leftHolding.weight, rightHolding.weight);
+    sharedWeight += commonWeight;
+    leftSharedWeight += leftHolding.weight;
+    rightSharedWeight += rightHolding.weight;
+    commonHoldings.push({
+      isin,
+      name: leftHolding.instrument_name || rightHolding.instrument_name,
+      leftWeight: leftHolding.weight,
+      rightWeight: rightHolding.weight,
+      commonWeight,
+    });
+  }
+  const leftSectors = allocationBySector(left.holdings);
+  const rightSectors = allocationBySector(right.holdings);
+  let sharedSectorWeight = 0;
+  for (const [key, leftSector] of leftSectors) {
+    const rightSector = rightSectors.get(key);
+    if (rightSector) sharedSectorWeight += Math.min(leftSector.weight, rightSector.weight);
+  }
+  return {
+    left,
+    right,
+    sharedWeight,
+    leftSharedWeight,
+    rightSharedWeight,
+    sharedSectorWeight,
+    leftTopTen: topTenWeight(left.holdings),
+    rightTopTen: topTenWeight(right.holdings),
+    commonHoldings: commonHoldings.sort((a, b) => b.commonWeight - a.commonWeight).slice(0, 10),
+    leftTopHoldings: topTenHoldings(left.holdings),
+    rightTopHoldings: topTenHoldings(right.holdings),
+    comparableLeftWeight: [...leftByIsin.values()].reduce((total, holding) => total + holding.weight, 0),
+    comparableRightWeight: [...rightByIsin.values()].reduce((total, holding) => total + holding.weight, 0),
+  };
+});
+
 function maturityDateFromHolding(name) {
   const value = String(name || '');
   const numeric = value.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\b/);
@@ -1235,7 +1384,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
     <header>
       <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
-      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button></div>
+      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button></div>
     </header>
 
     <section v-if="view === 'quartiles' && !selected" class="card category-browser quartile-browser" aria-label="Category quartiles">
@@ -1292,6 +1441,31 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <p v-else-if="!visiblePeerRows.length" class="message">No eligible Growth plans have enough matching NAV and benchmark TRI history for this period.</p>
       <div v-else class="peer-table-wrap"><div class="peer-table"><div class="peer-head"><span>Scheme</span><span>Fund avg</span><span>Benchmark avg</span><button type="button" class="peer-sort" @click="togglePeerSort('alpha')">Alpha {{ peerSort.key === 'alpha' ? (peerSort.direction === 'desc' ? '↓' : '↑') : '↕' }}</button><button type="button" class="peer-sort" @click="togglePeerSort('consistency')">Consistency {{ peerSort.key === 'consistency' ? (peerSort.direction === 'desc' ? '↓' : '↑') : '↕' }}</button></div><button v-for="row in visiblePeerRows" :key="row.scheme_code" class="peer-row" @click="openScheme(row.scheme_code)"><span><strong>{{ row.name }}</strong><small>{{ row.amc }}</small></span><strong data-label="Fund avg" :class="{ positive: row.metrics[peerPeriod].averageFund > 0, negative: row.metrics[peerPeriod].averageFund < 0 }">{{ row.metrics[peerPeriod].averageFund.toFixed(2) }}%</strong><strong data-label="Benchmark avg" :class="{ positive: row.metrics[peerPeriod].averageBenchmark > 0, negative: row.metrics[peerPeriod].averageBenchmark < 0 }">{{ row.metrics[peerPeriod].averageBenchmark.toFixed(2) }}%</strong><strong data-label="Alpha" :class="{ positive: row.metrics[peerPeriod].alpha > 0, negative: row.metrics[peerPeriod].alpha < 0 }">{{ row.metrics[peerPeriod].alpha >= 0 ? '+' : '' }}{{ row.metrics[peerPeriod].alpha.toFixed(2) }}%</strong><strong data-label="Consistency">{{ row.metrics[peerPeriod].consistency.toFixed(1) }}%</strong></button></div></div>
       <p v-if="visiblePeerRows.length" class="compare-footnote">Each window uses the same available fund NAV and benchmark TRI dates. Alpha means average fund return minus average benchmark return; consistency is the share of windows where the fund beat the benchmark.</p>
+    </section>
+
+    <section v-else-if="view === 'overlap' && !selected" class="card overlap-browser" aria-label="Portfolio overlap">
+      <div class="compare-intro"><div><p class="eyebrow">Portfolio overlap</p><h2>See what two funds actually own together</h2><p>Compare only verified monthly disclosures. Common holdings are matched by ISIN, not by a fuzzy name match.</p></div><span>{{ overlapSelection.length }} / 2 selected</span></div>
+      <div class="compare-search"><input v-model="overlapSearch" @keyup.enter="searchPortfolioOverlap" placeholder="Search a scheme with a portfolio disclosure"><button :disabled="overlapLoading || overlapSearch.trim().length < 2 || overlapSelection.length >= 2" @click="searchPortfolioOverlap">{{ overlapLoading ? 'Loading…' : 'Find scheme' }}</button></div>
+      <p v-if="error" class="message error">{{ error }}</p>
+      <div v-if="overlapResults.length" class="compare-results"><button v-for="scheme in overlapResults" :key="scheme.scheme_code" :disabled="overlapSelection.some((item) => item.scheme.scheme_code === scheme.scheme_code) || overlapSelection.length >= 2" @click="addToPortfolioOverlap(scheme)"><span><strong>{{ scheme.name }}</strong><small>{{ scheme.amc }} · {{ scheme.category || 'Category not supplied' }}</small></span><span>+ Add</span></button></div>
+      <p v-else-if="!overlapSelection.length" class="message">Choose two schemes. A scheme can be compared once its latest monthly disclosure has been imported and mapped.</p>
+      <div v-if="overlapSelection.length" class="overlap-selected">
+        <article v-for="entry in overlapSelection" :key="entry.scheme.scheme_code"><div><strong>{{ entry.scheme.name }}</strong><small>{{ entry.portfolio.amc }} · disclosure {{ entry.portfolio.as_of_date }}</small></div><button class="remove-compare" :aria-label="`Remove ${entry.scheme.name}`" @click="removeFromPortfolioOverlap(entry.scheme.scheme_code)">×</button></article>
+      </div>
+      <template v-if="portfolioOverlap">
+        <div class="overlap-metrics">
+          <div><span>Common holding overlap</span><strong>{{ (portfolioOverlap.sharedWeight * 100).toFixed(2) }}%</strong><small>Sum of the lower weight for each shared ISIN</small></div>
+          <div><span>Common sector overlap</span><strong>{{ (portfolioOverlap.sharedSectorWeight * 100).toFixed(2) }}%</strong><small>Sum of the lower disclosed sector weight</small></div>
+          <div><span>Top-10 concentration</span><strong>{{ (portfolioOverlap.leftTopTen * 100).toFixed(1) }}% / {{ (portfolioOverlap.rightTopTen * 100).toFixed(1) }}%</strong><small>First fund / second fund</small></div>
+        </div>
+        <div class="overlap-coverage"><span>First fund</span><strong>{{ (portfolioOverlap.leftSharedWeight * 100).toFixed(2) }}% in common holdings</strong><span>Second fund</span><strong>{{ (portfolioOverlap.rightSharedWeight * 100).toFixed(2) }}% in common holdings</strong></div>
+        <div class="overlap-list"><div class="overlap-list-head"><span>Common holding</span><span>First fund</span><span>Second fund</span></div><div v-for="holding in portfolioOverlap.commonHoldings" :key="holding.isin" class="overlap-list-row"><span><strong>{{ holding.name }}</strong><small>{{ holding.isin }}</small></span><strong>{{ (holding.leftWeight * 100).toFixed(2) }}%</strong><strong>{{ (holding.rightWeight * 100).toFixed(2) }}%</strong></div><p v-if="!portfolioOverlap.commonHoldings.length" class="message">No common ISINs were found in these two current disclosures.</p></div>
+        <div class="fund-top-holdings">
+          <section><h3>First fund: Top 10 holdings</h3><div class="holdings-list"><div v-for="holding in portfolioOverlap.leftTopHoldings" :key="`left-${holding.isin}-${holding.instrument_name}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.isin }}</small></span><b>{{ (holding.weight * 100).toFixed(2) }}%</b></div></div></section>
+          <section><h3>Second fund: Top 10 holdings</h3><div class="holdings-list"><div v-for="holding in portfolioOverlap.rightTopHoldings" :key="`right-${holding.isin}-${holding.instrument_name}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.isin }}</small></span><b>{{ (holding.weight * 100).toFixed(2) }}%</b></div></div></section>
+        </div>
+        <p class="compare-footnote">Only positive, non-derivative positions with an ISIN are used. The disclosures may have different as-of dates; compare the dates above before drawing a conclusion.</p>
+      </template>
     </section>
 
     <section v-else-if="selected" class="detail card" aria-label="Scheme detail">
