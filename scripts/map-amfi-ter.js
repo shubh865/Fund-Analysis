@@ -5,6 +5,10 @@ const db = require('../server/db');
 function normalizeFundName(name) {
   const normalized = String(name || '')
     .toLowerCase()
+    // AMFI occasionally appends the previous scheme name to the current
+    // identity. Match on the current name while the source key preserves the
+    // historical continuity.
+    .replace(/\bformerly\b.*$/, ' ')
     .replace(/&/g, ' and ')
     .replace(/\bflexicap\b/g, 'flexi cap')
     .replace(/\bmidcap\b/g, 'mid cap')

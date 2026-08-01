@@ -192,6 +192,14 @@ function setQuartileYears(years) {
   loadQuartiles();
 }
 
+function setQuartileReturnMode(mode) {
+  quartileReturnMode.value = mode;
+  // TER mappings can be refreshed while the local app remains open. Reload
+  // the raw observations when switching basis so a stale in-memory response
+  // cannot make otherwise covered funds disappear.
+  loadQuartiles();
+}
+
 function growthPlanType(name) {
   const normalized = name.toLowerCase();
   if (!normalized.includes('growth') || /\b(idcw|dividend|payout|reinvestment|bonus)\b/.test(normalized)) return null;
@@ -1239,7 +1247,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <label for="quartile-as-of">As of month</label>
         <input id="quartile-as-of" v-model="quartileAsOf" type="month" :max="latestNavMonth" @change="loadQuartiles">
         <div class="period-buttons" aria-label="Quartile return period"><button v-for="years in [1, 3, 5]" :key="years" type="button" :class="{ active: quartileYears === years }" :disabled="!quartileCategory" @click="setQuartileYears(years)">{{ years }}Y{{ years > 1 ? ' CAGR' : '' }}</button></div>
-        <div class="quartile-return-mode" aria-label="Quartile return basis"><span>Return basis</span><div class="period-buttons"><button type="button" :class="{ active: quartileReturnMode === 'net' }" @click="quartileReturnMode = 'net'">Net return</button><button type="button" :class="{ active: quartileReturnMode === 'gross' }" @click="quartileReturnMode = 'gross'">Gross before TER</button></div></div>
+        <div class="quartile-return-mode" aria-label="Quartile return basis"><span>Return basis</span><div class="period-buttons"><button type="button" :class="{ active: quartileReturnMode === 'net' }" @click="setQuartileReturnMode('net')">Net return</button><button type="button" :class="{ active: quartileReturnMode === 'gross' }" @click="setQuartileReturnMode('gross')">Gross before TER</button></div></div>
       </div>
       <p v-if="error" class="message error">{{ error }}</p>
       <p v-else-if="!quartileCategory" class="message">Choose a category and subcategory to split paired Growth plans into performance quartiles.</p>
