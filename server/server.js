@@ -25,6 +25,64 @@ function planFamily(name) {
     .trim();
 }
 
+function explicitTerPlan(name) {
+  const normalized = String(name || '').toLowerCase();
+  if (/\bdirect\s+(?:plan|option)\b/.test(normalized) || /-\s*direct\b/.test(normalized)) return 'direct';
+  if (/\b(?:regular|standard)\s+(?:plan|option)\b/.test(normalized) || /-\s*regular\b/.test(normalized)) return 'regular';
+  return null;
+}
+
+function daysBetween(left, right) {
+  return Math.round((Date.parse(`${right}T00:00:00Z`) - Date.parse(`${left}T00:00:00Z`)) / 86_400_000);
+}
+
+// Select raw, plan-specific AMFI TER observations without calculating a return.
+// New NSDL identities take precedence over legacy identities on overlapping
+// dates. Explicit Direct/Regular source labels must agree with the NAV plan.
+function resolveTerHistory(rows, planType) {
+  const candidatesByDate = new Map();
+  for (const row of rows) {
+    const sourcePlan = explicitTerPlan(row.scheme_name);
+    if (sourcePlan && sourcePlan !== planType) continue;
+    const value = planType === 'direct' ? row.direct_ter : row.regular_ter;
+    if (!Number.isFinite(value) || value <= 0 || value >= 100) continue;
+    const priority = String(row.source_scheme_key).startsWith('NSDL:') ? 3 : sourcePlan === planType ? 2 : 1;
+    const candidates = candidatesByDate.get(row.date) || [];
+    candidates.push({ value, priority });
+    candidatesByDate.set(row.date, candidates);
+  }
+
+  const resolved = [];
+  let ambiguousDays = 0;
+  for (const [date, candidates] of [...candidatesByDate.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const bestPriority = Math.max(...candidates.map((candidate) => candidate.priority));
+    const best = candidates.filter((candidate) => candidate.priority === bestPriority);
+    const minimum = Math.min(...best.map((candidate) => candidate.value));
+    const maximum = Math.max(...best.map((candidate) => candidate.value));
+    if (maximum - minimum > 0.05) {
+      ambiguousDays += 1;
+      continue;
+    }
+    resolved.push({ date, value: best.reduce((sum, candidate) => sum + candidate.value, 0) / best.length });
+  }
+
+  let maxGapDays = 0;
+  for (let index = 1; index < resolved.length; index += 1) {
+    maxGapDays = Math.max(maxGapDays, daysBetween(resolved[index - 1].date, resolved[index].date));
+  }
+  const changePoints = resolved.filter((point, index) => index === 0 || Math.abs(point.value - resolved[index - 1].value) > 0.0001);
+  return {
+    change_points: changePoints,
+    coverage: {
+      first_date: resolved[0]?.date || null,
+      last_date: resolved.at(-1)?.date || null,
+      observation_days: resolved.length,
+      max_gap_days: maxGapDays || null,
+      ambiguous_days: ambiguousDays,
+    },
+  };
+}
+
 app.get('/api/health', (_request, response) => {
   response.json({ status: 'ok' });
 });
@@ -246,6 +304,35 @@ app.get('/api/categories/:category/nav-snapshot', (request, response) => {
     WHERE latest_nav IS NOT NULL
     ORDER BY name COLLATE NOCASE
   `).all(asOfMonth, asOfMonth, ...requestedCategories, years, years);
+  if (String(request.query.includeTer || '') === '1' && schemes.length) {
+    const firstStartDate = schemes.reduce((earliest, scheme) => (
+      scheme.start_date && (!earliest || scheme.start_date < earliest) ? scheme.start_date : earliest
+    ), null);
+    const lastEndDate = schemes.reduce((latest, scheme) => (
+      scheme.latest_date && (!latest || scheme.latest_date > latest) ? scheme.latest_date : latest
+    ), null);
+    if (firstStartDate && lastEndDate) {
+      const terRows = db.prepare(`
+        SELECT m.scheme_code, m.plan_type, t.date, t.source_scheme_key, t.scheme_name,
+          t.regular_ter, t.direct_ter
+        FROM scheme_ter_mappings m
+        JOIN scheme_ter_daily t ON t.source_scheme_key = m.source_scheme_key
+        WHERE m.scheme_code IN (${schemes.map(() => '?').join(', ')})
+          AND t.date BETWEEN date(?, '-14 days') AND ?
+        ORDER BY m.scheme_code, t.date
+      `).all(...schemes.map((scheme) => scheme.scheme_code), firstStartDate, lastEndDate);
+      const rowsByScheme = new Map();
+      for (const row of terRows) {
+        const rows = rowsByScheme.get(row.scheme_code) || [];
+        rows.push(row);
+        rowsByScheme.set(row.scheme_code, rows);
+      }
+      for (const scheme of schemes) {
+        const planType = growthPlanType(scheme.name);
+        scheme.ter = planType ? resolveTerHistory(rowsByScheme.get(scheme.scheme_code) || [], planType) : null;
+      }
+    }
+  }
   response.json({ category: request.params.category, categories: requestedCategories, years, as_of_month: asOfMonth, plans, schemes });
 });
 

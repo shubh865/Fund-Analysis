@@ -38,6 +38,7 @@ const quartileMainCategory = ref('');
 const quartileCategory = ref('');
 const quartileYears = ref(1);
 const quartileAsOf = ref('');
+const quartileReturnMode = ref('net');
 const quartileRows = ref([]);
 const quartileLoading = ref(false);
 const compareSearch = ref('');
@@ -154,7 +155,7 @@ async function loadQuartiles() {
   try {
     const sourceCategories = selectedQuartileSubcategory.value?.sourceCategories || [];
     if (!sourceCategories.length) return;
-    const response = await fetch(`/api/categories/${encodeURIComponent(quartileCategory.value)}/nav-snapshot?years=${quartileYears.value}&asOf=${encodeURIComponent(quartileAsOf.value)}&plans=growth-direct-regular&categories=${encodeURIComponent(JSON.stringify(sourceCategories))}`);
+    const response = await fetch(`/api/categories/${encodeURIComponent(quartileCategory.value)}/nav-snapshot?years=${quartileYears.value}&asOf=${encodeURIComponent(quartileAsOf.value)}&plans=growth-direct-regular&includeTer=1&categories=${encodeURIComponent(JSON.stringify(sourceCategories))}`);
     if (!response.ok) throw new Error('Could not load raw NAV observations for this quartile view.');
     quartileRows.value = (await response.json()).schemes;
   } catch (requestError) {
@@ -189,9 +190,49 @@ function planFamily(name) {
     .trim();
 }
 
-function snapshotReturn(row, years) {
+function addUtcDays(dateString, days) {
+  const date = new Date(`${dateString}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function grossExpenseFactor(row) {
+  const points = row.ter?.change_points || [];
+  const coverage = row.ter?.coverage;
+  if (!points.length || !coverage?.first_date || !coverage.last_date || coverage.ambiguous_days > 0) return null;
+  const startCoverageGap = Math.round((Date.parse(`${coverage.first_date}T00:00:00Z`) - Date.parse(`${row.start_date}T00:00:00Z`)) / 86_400_000);
+  const endCoverageGap = Math.round((Date.parse(`${row.latest_date}T00:00:00Z`) - Date.parse(`${coverage.last_date}T00:00:00Z`)) / 86_400_000);
+  if (startCoverageGap > 0 || endCoverageGap > 7) return null;
+  if (coverage.max_gap_days && coverage.max_gap_days > 14) return null;
+
+  const firstApplicableDate = addUtcDays(row.start_date, 1);
+  let pointIndex = points.findLastIndex((point) => point.date <= firstApplicableDate);
+  if (pointIndex < 0) return null;
+  let currentDate = firstApplicableDate;
+  let factor = 1;
+  while (currentDate <= row.latest_date) {
+    const annualTer = points[pointIndex]?.value;
+    if (!Number.isFinite(annualTer) || annualTer <= 0 || annualTer >= 100) return null;
+    const nextDate = points[pointIndex + 1]?.date;
+    const segmentEnd = nextDate && nextDate <= row.latest_date ? addUtcDays(nextDate, -1) : row.latest_date;
+    const calendarDays = Math.max(0, Math.round((Date.parse(`${segmentEnd}T00:00:00Z`) - Date.parse(`${currentDate}T00:00:00Z`)) / 86_400_000) + 1);
+    const dailyExpenseRate = annualTer / 100 / 365.2425;
+    factor *= Math.pow(1 - dailyExpenseRate, -calendarDays);
+    if (!nextDate || nextDate > row.latest_date) break;
+    currentDate = nextDate;
+    pointIndex += 1;
+  }
+  return factor;
+}
+
+function snapshotReturn(row, years, mode = 'net') {
   if (!Number.isFinite(row.latest_nav) || !Number.isFinite(row.start_nav) || row.start_nav <= 0) return null;
-  const totalReturn = row.latest_nav / row.start_nav;
+  let totalReturn = row.latest_nav / row.start_nav;
+  if (mode === 'gross') {
+    const expenseFactor = grossExpenseFactor(row);
+    if (!Number.isFinite(expenseFactor)) return null;
+    totalReturn *= expenseFactor;
+  }
   if (years === 1) return (totalReturn - 1) * 100;
   const elapsedDays = (Date.parse(`${row.latest_date}T00:00:00Z`) - Date.parse(`${row.start_date}T00:00:00Z`)) / 86_400_000;
   return elapsedDays > 0 ? (Math.pow(totalReturn, 365.2425 / elapsedDays) - 1) * 100 : null;
@@ -201,7 +242,7 @@ const quartileTables = computed(() => {
   const families = new Map();
   for (const row of quartileRows.value) {
     const type = growthPlanType(row.name);
-    const value = snapshotReturn(row, quartileYears.value);
+    const value = snapshotReturn(row, quartileYears.value, quartileReturnMode.value);
     if (!type || !Number.isFinite(value)) continue;
     const key = planFamily(row.name);
     const entry = families.get(key) || { family: key, direct: null, regular: null };
@@ -231,6 +272,12 @@ const quartileTables = computed(() => {
     subtitle: ['Top 25%', 'Next 25%', 'Next 25%', 'Bottom 25%'][quartile],
     rows: topTwentyAmcs.filter((_, index) => Math.min(3, Math.floor(index * 4 / topTwentyAmcs.length)) === quartile),
   }));
+});
+
+const quartileGrossCoverage = computed(() => {
+  const eligible = quartileRows.value.filter((row) => growthPlanType(row.name) && Number.isFinite(snapshotReturn(row, quartileYears.value, 'net')));
+  const covered = eligible.filter((row) => Number.isFinite(snapshotReturn(row, quartileYears.value, 'gross')));
+  return { eligible: eligible.length, covered: covered.length };
 });
 
 async function showQuartiles() {
@@ -1116,12 +1163,13 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <label for="quartile-as-of">As of month</label>
         <input id="quartile-as-of" v-model="quartileAsOf" type="month" :max="latestNavMonth" @change="loadQuartiles">
         <div class="period-buttons" aria-label="Quartile return period"><button v-for="years in [1, 3, 5]" :key="years" type="button" :class="{ active: quartileYears === years }" :disabled="!quartileCategory" @click="setQuartileYears(years)">{{ years }}Y{{ years > 1 ? ' CAGR' : '' }}</button></div>
+        <div class="quartile-return-mode" aria-label="Quartile return basis"><span>Return basis</span><div class="period-buttons"><button type="button" :class="{ active: quartileReturnMode === 'net' }" @click="quartileReturnMode = 'net'">Net return</button><button type="button" :class="{ active: quartileReturnMode === 'gross' }" @click="quartileReturnMode = 'gross'">Gross before TER</button></div></div>
       </div>
       <p v-if="error" class="message error">{{ error }}</p>
       <p v-else-if="!quartileCategory" class="message">Choose a category and subcategory to split paired Growth plans into performance quartiles.</p>
       <p v-else-if="quartileLoading" class="message">Loading raw NAV observations…</p>
       <template v-else>
-        <p class="quartile-note">The first 20 AMCs are chosen by their highest-ranked eligible Growth fund. Q1 holds the top 25% of that AMC set by Direct Growth return where available; Regular Growth is used only when a Direct plan does not exist. Both plan returns are shown.</p>
+        <p class="quartile-note"><template v-if="quartileReturnMode === 'net'">Net return is the investor return calculated directly from published NAV.</template><template v-else>Gross before TER is an estimate reconstructed by adding each plan's applicable daily expense drag back to NAV performance. {{ quartileGrossCoverage.covered }} of {{ quartileGrossCoverage.eligible }} eligible plan records have complete, unambiguous TER coverage; the rest are excluded.</template> The first 20 AMCs are chosen by their highest-ranked eligible Growth fund. Q1 holds the top 25% of that AMC set by Direct Growth return where available; Regular Growth is used only when a Direct plan does not exist.</p>
         <div class="quartile-grid">
           <section v-for="table in quartileTables" :key="table.label" class="quartile-table" :aria-label="`${table.label} ${table.subtitle}`">
             <header><strong>{{ table.label }}</strong><span>{{ table.subtitle }}</span></header>
