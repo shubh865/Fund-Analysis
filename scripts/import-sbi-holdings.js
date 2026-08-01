@@ -86,7 +86,16 @@ function parseSheet(workbook, sheetName, index) {
       yieldToCall: number(row[9]),
     });
   }
-  return { ...details, date, holdings: normalizeHoldings(holdings, details.name) };
+  const normalizedHoldings = normalizeHoldings(holdings, details.name);
+  const cashGross = normalizedHoldings
+    .filter((holding) => !/derivative/i.test(holding.assetClass || ''))
+    .reduce((sum, holding) => sum + Math.abs(holding.weight || 0), 0);
+  if (cashGross >= 0.005 && cashGross <= 0.05) {
+    for (const holding of normalizedHoldings) {
+      if (!/derivative/i.test(holding.assetClass || '') && holding.weight != null) holding.weight *= 100;
+    }
+  }
+  return { ...details, date, holdings: normalizedHoldings };
 }
 
 const workbook = XLSX.readFile(path.resolve(inputFile), { cellDates: false });

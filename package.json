@@ -64,6 +64,7 @@
     "refresh:bandhan-holdings": "node scripts/refresh-bandhan-holdings.js",
     "refresh:kotak-holdings": "node scripts/refresh-kotak-holdings.js",
     "refresh:alphagrep-holdings": "node scripts/refresh-alphagrep-holdings.js",
+    "normalize:debt-holdings": "node scripts/normalize-debt-holdings.js",
     "refresh:all-holdings": "node scripts/refresh-all-holdings.js",
     "import:amfi-aaum": "node scripts/import-amfi-aaum.js",
     "import:amfi-total-aum": "node scripts/import-amfi-total-aum.js",

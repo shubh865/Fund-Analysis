@@ -80,7 +80,7 @@ function parseSheet(workbook, sheetName, index) {
       continue;
     }
     holdings.push({ assetClass, holdingGroup, instrumentName, isin: isin || null, industryOrRating: industryOrRating || null,
-      quantity, marketValueLakh, weight: publishedWeight == null ? null : publishedWeight / 100, yield: number(row[7]), yieldToCall: null });
+      quantity, marketValueLakh, weight: publishedWeight, yield: number(row[7]), yieldToCall: null });
   }
   const normalizedHoldings = normalizeHoldings(holdings, details.name);
   return normalizedHoldings.length ? { ...details, date, holdings: normalizedHoldings } : null;

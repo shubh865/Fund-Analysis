@@ -23,6 +23,15 @@ for (let index = 0; index < refreshers.length; index += 1) {
   }
 }
 
+console.log('\nNormalizing stored debt holdings...');
+const debtNormalization = spawnSync(process.execPath, [path.resolve(__dirname, 'normalize-debt-holdings.js')], {
+  cwd: path.resolve(__dirname, '..'),
+  stdio: 'inherit',
+});
+if (debtNormalization.status !== 0) {
+  failures.push({ name: 'normalize:debt-holdings', exitCode: debtNormalization.status });
+}
+
 const db = require('../server/db');
 const commandFailureCount = failures.length;
 const suspectSnapshots = db.prepare(`
