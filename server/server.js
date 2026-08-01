@@ -12,6 +12,15 @@ function growthPlanType(name) {
   return /\bdirect\b/.test(normalized) ? 'direct' : 'regular';
 }
 
+function quartilePlanType(name) {
+  const normalized = String(name || '').toLowerCase();
+  if (!normalized.includes('growth')) return null;
+  if (/\b(idcw|dividend|payout|reinvestment|bonus)\b/.test(normalized)) return null;
+  if (/\b(discontinued|defunct|segregated|institutional|retail|premium|wholesale|provident|unclaimed)\b/.test(normalized)) return null;
+  if (/investor education|super institutional|\bpf\b/.test(normalized)) return null;
+  return /\bdirect\b/.test(normalized) ? 'direct' : 'regular';
+}
+
 function planFamily(name) {
   return String(name || '').toUpperCase()
     .replace(/\bFLEXICAP\b/g, 'FLEXI CAP')
@@ -281,7 +290,7 @@ app.get('/api/categories/:category/nav-snapshot', (request, response) => {
   const asOfMonth = asOf || null;
   // This returns source NAV observations only. Return calculations and ranking
   // are intentionally performed by the browser.
-  const schemes = db.prepare(`
+  let schemes = db.prepare(`
     WITH latest AS (
       SELECT s.scheme_code, s.name, s.amc, s.category,
         (SELECT nav FROM nav_daily WHERE scheme_code = s.scheme_code AND date <= COALESCE(date(? || '-01', '+1 month', '-1 day'), '9999-12-31') ORDER BY date DESC LIMIT 1) AS latest_nav,
@@ -304,6 +313,21 @@ app.get('/api/categories/:category/nav-snapshot', (request, response) => {
     WHERE latest_nav IS NOT NULL
     ORDER BY name COLLATE NOCASE
   `).all(asOfMonth, asOfMonth, ...requestedCategories, years, years);
+  const effectiveAsOfDate = db.prepare(`
+    SELECT MAX(date) AS date
+    FROM nav_daily
+    WHERE date <= COALESCE(date(? || '-01', '+1 month', '-1 day'), '9999-12-31')
+  `).get(asOfMonth).date;
+  if (plans === 'growth-direct-regular') {
+    schemes = schemes.filter((scheme) => (
+      quartilePlanType(scheme.name)
+      && effectiveAsOfDate
+      && daysBetween(scheme.latest_date, effectiveAsOfDate) >= 0
+      // Historical AMFI archives can end several days before the database-wide
+      // month end. Two weeks keeps valid month slices without admitting stale funds.
+      && daysBetween(scheme.latest_date, effectiveAsOfDate) <= 14
+    ));
+  }
   if (String(request.query.includeTer || '') === '1' && schemes.length) {
     const firstStartDate = schemes.reduce((earliest, scheme) => (
       scheme.start_date && (!earliest || scheme.start_date < earliest) ? scheme.start_date : earliest
@@ -333,7 +357,7 @@ app.get('/api/categories/:category/nav-snapshot', (request, response) => {
       }
     }
   }
-  response.json({ category: request.params.category, categories: requestedCategories, years, as_of_month: asOfMonth, plans, schemes });
+  response.json({ category: request.params.category, categories: requestedCategories, years, as_of_month: asOfMonth, effective_as_of_date: effectiveAsOfDate, plans, schemes });
 });
 
 app.get('/api/categories/:category/peer-nav-history', (request, response) => {

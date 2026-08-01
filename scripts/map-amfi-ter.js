@@ -3,7 +3,7 @@
 const db = require('../server/db');
 
 function normalizeFundName(name) {
-  return String(name || '')
+  const normalized = String(name || '')
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/\bflexicap\b/g, 'flexi cap')
@@ -13,6 +13,12 @@ function normalizeFundName(name) {
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ');
+  const verifiedRenameAliases = new Map([
+    ['idfc emerging businesses', 'bandhan small cap'],
+    ['bandhan emerging businesses', 'bandhan small cap'],
+    ['franklin india smaller companies', 'franklin india small cap'],
+  ]);
+  return verifiedRenameAliases.get(normalized) || normalized;
 }
 
 function planType(name) {

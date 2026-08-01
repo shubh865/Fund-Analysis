@@ -95,11 +95,29 @@ function quartileGroup(category) {
 }
 
 function quartileSubcategoryLabel(category) {
-  return String(category || '')
+  const label = String(category || '')
     .replace(/^(Equity|Debt|Hybrid) Schemes? - /i, '')
     .replace(/^Income\/Debt Oriented Schemes - /i, '')
     .replace(/^Exchange Traded Funds \(ETFs\) - /i, '')
-    .replace(/^Index Funds - /i, 'Index fund · ');
+    .replace(/^Index Funds - /i, 'Index Fund: ')
+    .replace(/^Other Scheme - /i, '')
+    .trim();
+  const aliases = {
+    'elss- tax saver fund': 'ELSS',
+    'banking and psu debt fund': 'Banking and PSU Fund',
+    'dynamic term fund': 'Dynamic Bond',
+    'medium term fund': 'Medium Duration Fund',
+    'short term fund': 'Short Duration Fund',
+    'ultra short term fund': 'Ultra Short Duration Fund',
+    'ultra short to short term fund': 'Ultra Short Duration Fund',
+    gilt: 'Gilt Fund',
+    'balanced advantage fund/ dynamic asset allocation': 'Dynamic Asset Allocation or Balanced Advantage',
+    'equity savings fund': 'Equity Savings',
+    'multi asset allocation fund': 'Multi Asset Allocation',
+    'fund of funds scheme (domestic)': 'FoF Domestic',
+    'fund of funds investing overseas': 'FoF Overseas',
+  };
+  return aliases[label.toLowerCase()] || label;
 }
 
 const quartileMainCategories = computed(() => ['Equity', 'Debt', 'Hybrid', 'Other']
@@ -202,7 +220,9 @@ function grossExpenseFactor(row) {
   if (!points.length || !coverage?.first_date || !coverage.last_date || coverage.ambiguous_days > 0) return null;
   const startCoverageGap = Math.round((Date.parse(`${coverage.first_date}T00:00:00Z`) - Date.parse(`${row.start_date}T00:00:00Z`)) / 86_400_000);
   const endCoverageGap = Math.round((Date.parse(`${row.latest_date}T00:00:00Z`) - Date.parse(`${coverage.last_date}T00:00:00Z`)) / 86_400_000);
-  if (startCoverageGap > 0 || endCoverageGap > 7) return null;
+  // TER changes infrequently; carry the latest official value for at most
+  // 14 days so a short publication lag does not remove an otherwise valid fund.
+  if (startCoverageGap > 0 || endCoverageGap > 14) return null;
   if (coverage.max_gap_days && coverage.max_gap_days > 14) return null;
 
   const firstApplicableDate = addUtcDays(row.start_date, 1);
@@ -238,6 +258,12 @@ function snapshotReturn(row, years, mode = 'net') {
   return elapsedDays > 0 ? (Math.pow(totalReturn, 365.2425 / elapsedDays) - 1) * 100 : null;
 }
 
+function quartilePlanPreference(name, type) {
+  const normalized = String(name || '').toLowerCase();
+  if (type === 'direct') return /\bdirect\b/.test(normalized) ? 2 : 1;
+  return /\bregular\b/.test(normalized) ? 2 : 1;
+}
+
 const quartileTables = computed(() => {
   const families = new Map();
   for (const row of quartileRows.value) {
@@ -248,7 +274,12 @@ const quartileTables = computed(() => {
     const entry = families.get(key) || { family: key, direct: null, regular: null };
     // A family can occasionally have duplicate plan records; prefer the one
     // with the latest source NAV date.
-    if (!entry[type] || row.latest_date > entry[type].latest_date) entry[type] = { ...row, value };
+    const candidate = { ...row, value, planPreference: quartilePlanPreference(row.name, type) };
+    if (!entry[type]
+      || row.latest_date > entry[type].latest_date
+      || (row.latest_date === entry[type].latest_date && candidate.planPreference > entry[type].planPreference)) {
+      entry[type] = candidate;
+    }
     families.set(key, entry);
   }
   const ranked = [...families.values()]
@@ -261,8 +292,9 @@ const quartileTables = computed(() => {
     }))
     .sort((left, right) => right.rankingValue - left.rankingValue);
   const includedAmcs = new Set();
-  const topTwentyAmcs = ranked.filter((entry) => {
-    // The first occurrence is each AMC's highest-ranked eligible Growth fund.
+  const displayedAmcs = ranked.filter((entry) => {
+    // Rank the complete eligible AMC universe, then display its best 20
+    // representatives. No AMC is removed from the source universe.
     if (!entry.amc || includedAmcs.has(entry.amc) || includedAmcs.size >= 20) return false;
     includedAmcs.add(entry.amc);
     return true;
@@ -270,7 +302,7 @@ const quartileTables = computed(() => {
   return [0, 1, 2, 3].map((quartile) => ({
     label: `Q${quartile + 1}`,
     subtitle: ['Top 25%', 'Next 25%', 'Next 25%', 'Bottom 25%'][quartile],
-    rows: topTwentyAmcs.filter((_, index) => Math.min(3, Math.floor(index * 4 / topTwentyAmcs.length)) === quartile),
+    rows: displayedAmcs.filter((_, index) => Math.min(3, Math.floor(index * 4 / displayedAmcs.length)) === quartile),
   }));
 });
 
@@ -1169,7 +1201,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <p v-else-if="!quartileCategory" class="message">Choose a category and subcategory to split paired Growth plans into performance quartiles.</p>
       <p v-else-if="quartileLoading" class="message">Loading raw NAV observations…</p>
       <template v-else>
-        <p class="quartile-note"><template v-if="quartileReturnMode === 'net'">Net return is the investor return calculated directly from published NAV.</template><template v-else>Gross before TER is an estimate reconstructed by adding each plan's applicable daily expense drag back to NAV performance. {{ quartileGrossCoverage.covered }} of {{ quartileGrossCoverage.eligible }} eligible plan records have complete, unambiguous TER coverage; the rest are excluded.</template> The first 20 AMCs are chosen by their highest-ranked eligible Growth fund. Q1 holds the top 25% of that AMC set by Direct Growth return where available; Regular Growth is used only when a Direct plan does not exist.</p>
+        <p class="quartile-note"><template v-if="quartileReturnMode === 'net'">Net return is the investor return calculated directly from published NAV.</template><template v-else>Gross before TER is an estimate reconstructed by adding each plan's applicable daily expense drag back to NAV performance. {{ quartileGrossCoverage.covered }} of {{ quartileGrossCoverage.eligible }} eligible plan records have complete, unambiguous TER coverage; the rest are excluded.</template> All eligible AMCs are ranked and the best 20 representatives are displayed. Q1 holds the top 25% of the displayed set by Direct Growth return where available; Regular Growth is used only when a Direct plan does not exist.</p>
         <div class="quartile-grid">
           <section v-for="table in quartileTables" :key="table.label" class="quartile-table" :aria-label="`${table.label} ${table.subtitle}`">
             <header><strong>{{ table.label }}</strong><span>{{ table.subtitle }}</span></header>

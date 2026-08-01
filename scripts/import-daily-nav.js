@@ -7,6 +7,13 @@ const rawDirectory = path.join(__dirname, '..', 'raw');
 const excludedAmcs = new Set(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'amc-exclusions.json'), 'utf8')));
 const invalidNavs = new Set(['#N/A', '#DIV/0!', 'N.A.', 'NA', 'B.C.', 'B. C.']);
 
+function isUnwantedSchemeName(name) {
+  const normalized = String(name || '').toLowerCase();
+  return /\b(discontinued|defunct|segregated)\b/.test(normalized)
+    || normalized.includes('unclaimed redemption')
+    || normalized.includes('investor education');
+}
+
 function normaliseIsin(value) {
   const isin = (value || '').trim().toUpperCase();
   return /^(INF|IINF)[A-Z0-9]{9}$/.test(isin) ? isin : null;
@@ -60,7 +67,7 @@ async function getSource() {
 async function main() {
   const source = await getSource();
   const parsedRows = parseNavAll(source);
-  const rows = parsedRows.filter((row) => !excludedAmcs.has(row.amc));
+  const rows = parsedRows.filter((row) => !excludedAmcs.has(row.amc) && !isUnwantedSchemeName(row.name));
   if (!rows.length) throw new Error('No valid NAV rows remain after AMC exclusions; source format may have changed.');
   fs.mkdirSync(rawDirectory, { recursive: true });
   const latestDate = rows.map((row) => row.date).sort().at(-1);
@@ -83,7 +90,7 @@ async function main() {
   `);
   const importRows = db.transaction((records) => records.forEach((row) => { upsertScheme.run(row); upsertNav.run(row); }));
   importRows(rows);
-  console.log(`Imported ${rows.length} valid NAV rows; skipped ${parsedRows.length - rows.length} excluded-AMC rows; latest reported date: ${latestDate}.`);
+  console.log(`Imported ${rows.length} valid NAV rows; skipped ${parsedRows.length - rows.length} excluded-AMC or discontinued/non-investment rows; latest reported date: ${latestDate}.`);
 }
 
 main().catch((error) => { console.error(error.message); process.exitCode = 1; });

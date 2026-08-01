@@ -65,6 +65,8 @@
     "refresh:kotak-holdings": "node scripts/refresh-kotak-holdings.js",
     "refresh:alphagrep-holdings": "node scripts/refresh-alphagrep-holdings.js",
     "normalize:debt-holdings": "node scripts/normalize-debt-holdings.js",
+    "cleanup:schemes": "node scripts/cleanup-discontinued-schemes.js",
+    "cleanup:schemes:apply": "node scripts/cleanup-discontinued-schemes.js --include-stale --apply",
     "refresh:all-holdings": "node scripts/refresh-all-holdings.js",
     "import:amfi-aaum": "node scripts/import-amfi-aaum.js",
     "import:amfi-total-aum": "node scripts/import-amfi-total-aum.js",
