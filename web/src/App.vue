@@ -51,6 +51,8 @@ const peerPeriod = ref(1);
 const peerPlan = ref('direct');
 const peerRows = ref([]);
 const peerBenchmark = ref(null);
+const peerBenchmarkMismatchCount = ref(0);
+const peerBenchmarkHistoryAvailable = ref(false);
 const peerLoading = ref(false);
 const peerSort = ref({ key: 'alpha', direction: 'desc' });
 const analysisMode = ref('peers');
@@ -164,6 +166,8 @@ function selectPeerMainCategory() {
   peerCategory.value = '';
   peerRows.value = [];
   peerBenchmark.value = null;
+  peerBenchmarkMismatchCount.value = 0;
+  peerBenchmarkHistoryAvailable.value = false;
 }
 
 async function loadQuartiles() {
@@ -313,6 +317,7 @@ const quartileGrossCoverage = computed(() => {
 });
 
 async function showQuartiles() {
+  closeDetail();
   view.value = 'quartiles';
   if (!categories.value.length) {
     try { await loadCategories(); } catch (requestError) { error.value = requestError.message; }
@@ -320,17 +325,24 @@ async function showQuartiles() {
 }
 
 async function showCompare() {
+  closeDetail();
   view.value = 'peers';
   analysisMode.value = 'selected';
   compareResults.value = [];
 }
 
 async function showPeerAnalysis() {
+  closeDetail();
   view.value = 'peers';
   analysisMode.value = 'peers';
   if (!categories.value.length) {
     try { await loadCategories(); } catch (requestError) { error.value = requestError.message; }
   }
+}
+
+function showSchemes() {
+  closeDetail();
+  view.value = 'schemes';
 }
 
 function subtractCalendarYears(dateString, years) {
@@ -340,6 +352,20 @@ function subtractCalendarYears(dateString, years) {
   // 29 February becomes 28 February in a non-leap target year.
   if (date.getUTCMonth() !== month) date.setUTCDate(0);
   return date.toISOString().slice(0, 10);
+}
+
+function subtractCalendarMonths(dateString, months) {
+  const date = new Date(`${dateString}T00:00:00Z`);
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() - months);
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
+  return date.toISOString().slice(0, 10);
+}
+
+function subtractPeriod(dateString, months) {
+  return months % 12 === 0 ? subtractCalendarYears(dateString, months / 12) : subtractCalendarMonths(dateString, months);
 }
 
 function previousPoint(points, dateString) {
@@ -399,6 +425,8 @@ async function loadPeerAnalysis() {
     if (!response.ok) throw new Error('Could not load raw NAV and benchmark TRI histories for this category.');
     const payload = await response.json();
     peerBenchmark.value = payload.benchmark;
+    peerBenchmarkMismatchCount.value = payload.benchmark_mismatch_count || 0;
+    peerBenchmarkHistoryAvailable.value = Boolean(payload.benchmark_history?.length);
     // Yield once so the loading state is visible before the browser performs
     // the deliberately frontend-only rolling calculations.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -406,13 +434,13 @@ async function loadPeerAnalysis() {
       .map((scheme) => ({
         ...scheme,
         metrics: peerRollingMetrics(payload.histories[scheme.scheme_code], payload.benchmark_history),
-      }))
-      .filter((scheme) => scheme.metrics[peerPeriod.value])
-      .sort((left, right) => right.metrics[peerPeriod.value].alpha - left.metrics[peerPeriod.value].alpha);
+      }));
   } catch (requestError) {
     error.value = requestError.message;
     peerRows.value = [];
     peerBenchmark.value = null;
+    peerBenchmarkMismatchCount.value = 0;
+    peerBenchmarkHistoryAvailable.value = false;
   } finally {
     peerLoading.value = false;
   }
@@ -443,7 +471,7 @@ async function searchCompare() {
   compareLoading.value = true;
   error.value = '';
   try {
-    const response = await fetch(`/api/schemes?q=${encodeURIComponent(query)}&limit=12`);
+    const response = await fetch(`/api/schemes?q=${encodeURIComponent(query)}&limit=12&plan=growth`);
     if (!response.ok) throw new Error('Could not search schemes for comparison.');
     compareResults.value = (await response.json()).schemes;
   } catch (requestError) {
@@ -500,9 +528,7 @@ function formatCurrency(value) {
 function returnFromMonths(months, annualised = false) {
   if (history.value.length < 2) return null;
   const latest = history.value.at(-1);
-  const target = new Date(`${latest.date}T00:00:00Z`);
-  target.setUTCMonth(target.getUTCMonth() - months);
-  const startingNav = [...history.value].reverse().find((point) => point.date <= target.toISOString().slice(0, 10));
+  const startingNav = latestPointOnOrBefore(history.value, subtractPeriod(latest.date, months));
   if (!startingNav) return null;
   const totalReturn = latest.nav / startingNav.nav;
   if (!annualised) return (totalReturn - 1) * 100;
@@ -519,14 +545,31 @@ function returnForPeriod(points, months, annualised = false, endDate = null) {
   if (points.length < 2 || !endDate) return null;
   const end = latestPointOnOrBefore(points, endDate);
   if (!end) return null;
-  const target = new Date(`${endDate}T00:00:00Z`);
-  target.setUTCMonth(target.getUTCMonth() - months);
-  const start = latestPointOnOrBefore(points, target.toISOString().slice(0, 10));
+  const start = latestPointOnOrBefore(points, subtractPeriod(end.date, months));
   if (!start || start.date === end.date) return null;
   const totalReturn = end.value / start.value;
   const elapsedDays = (Date.parse(`${end.date}T00:00:00Z`) - Date.parse(`${start.date}T00:00:00Z`)) / 86_400_000;
   if (!Number.isFinite(totalReturn) || elapsedDays <= 0) return null;
   return annualised ? (Math.pow(totalReturn, 365.2425 / elapsedDays) - 1) * 100 : (totalReturn - 1) * 100;
+}
+
+function alignedPeriodReturns(fundPoints, benchmarkPoints, months, annualised = false, desiredEndDate = null) {
+  if (fundPoints.length < 2 || benchmarkPoints.length < 2 || !desiredEndDate) return null;
+  const benchmarkByDate = new Map(benchmarkPoints.map((point) => [point.date, point.value]));
+  const aligned = fundPoints
+    .filter((point) => Number.isFinite(benchmarkByDate.get(point.date)))
+    .map((point) => ({ date: point.date, fund: point.value, benchmark: benchmarkByDate.get(point.date) }));
+  const end = latestPointOnOrBefore(aligned, desiredEndDate);
+  if (!end) return null;
+  const start = latestPointOnOrBefore(aligned, subtractPeriod(end.date, months));
+  if (!start || start.date === end.date) return null;
+  const elapsedDays = (Date.parse(`${end.date}T00:00:00Z`) - Date.parse(`${start.date}T00:00:00Z`)) / 86_400_000;
+  if (elapsedDays <= 0 || start.fund <= 0 || start.benchmark <= 0) return null;
+  const exponent = annualised ? 365.2425 / elapsedDays : 1;
+  const fund = (Math.pow(end.fund / start.fund, exponent) - 1) * 100;
+  const benchmark = (Math.pow(end.benchmark / start.benchmark, exponent) - 1) * 100;
+  if (!Number.isFinite(fund) || !Number.isFinite(benchmark)) return null;
+  return { startDate: start.date, endDate: end.date, fund, benchmark, outperformance: fund - benchmark };
 }
 
 const compareRows = computed(() => compareSelection.value.map((item) => {
@@ -544,9 +587,8 @@ const compareRows = computed(() => compareSelection.value.map((item) => {
       ['oneYear', 12, false], ['threeYear', 36, true], ['fiveYear', 60, true],
     ];
     for (const [key, months, annualised] of comparisonPeriods) {
-      const fundReturn = returnForPeriod(fundPoints, months, annualised, commonEnd);
-      const benchmarkReturn = returnForPeriod(item.benchmarkHistory, months, annualised, commonEnd);
-      if (fundReturn !== null && benchmarkReturn !== null) benchmarkOutperformance[key] = fundReturn - benchmarkReturn;
+      const aligned = alignedPeriodReturns(fundPoints, item.benchmarkHistory, months, annualised, commonEnd);
+      if (aligned) benchmarkOutperformance[key] = aligned.outperformance;
     }
   }
   return {
@@ -558,19 +600,19 @@ const compareRows = computed(() => compareSelection.value.map((item) => {
 }));
 
 const benchmarkComparison = computed(() => {
-  if (!selected.value?.benchmark_name || !benchmarkHistory.value.length || !history.value.length) return null;
+  if (isDistributionScheme.value || !selected.value?.benchmark_name || !benchmarkHistory.value.length || !history.value.length) return null;
   const fundAsValues = history.value.map((point) => ({ date: point.date, value: point.nav }));
   const commonEnd = [history.value.at(-1).date, benchmarkHistory.value.at(-1).date].sort()[0];
   const periods = [
     { label: '1Y', months: 12, annualised: false },
     { label: '3Y', months: 36, annualised: true },
     { label: '5Y', months: 60, annualised: true },
-  ].map((period) => {
-    const fund = returnForPeriod(fundAsValues, period.months, period.annualised, commonEnd);
-    const benchmark = returnForPeriod(benchmarkHistory.value, period.months, period.annualised, commonEnd);
-    return { ...period, fund, benchmark, outperformance: fund === null || benchmark === null ? null : fund - benchmark };
-  });
-  return { asOf: commonEnd, periods };
+  ].map((period) => ({
+    ...period,
+    ...(alignedPeriodReturns(fundAsValues, benchmarkHistory.value, period.months, period.annualised, commonEnd)
+      || { fund: null, benchmark: null, outperformance: null, startDate: null, endDate: null }),
+  }));
+  return { asOf: periods.find((period) => period.endDate)?.endDate || commonEnd, periods };
 });
 
 function latestPointOnOrBefore(points, targetDate) {
@@ -640,11 +682,15 @@ function fundDailyReturns(fundHistory, years) {
 
 function annualisedSharpe(fundReturns, rates) {
   if (fundReturns.length < 20 || !rates.length) return null;
-  const rateByDate = new Map(rates.map((rate) => [rate.date, rate.annual_rate_percent]));
+  const orderedRates = [...rates].sort((left, right) => left.date.localeCompare(right.date));
+  let rateIndex = -1;
   let lastRate = null;
   const excess = [];
   for (const point of fundReturns) {
-    if (rateByDate.has(point.date)) lastRate = rateByDate.get(point.date);
+    while (rateIndex + 1 < orderedRates.length && orderedRates[rateIndex + 1].date <= point.date) {
+      rateIndex += 1;
+      lastRate = orderedRates[rateIndex].annual_rate_percent;
+    }
     if (!Number.isFinite(lastRate)) continue;
     const dailyRiskFree = Math.pow(1 + (lastRate / 100), 1 / 252) - 1;
     excess.push(point.fund - dailyRiskFree);
@@ -678,8 +724,9 @@ function monthlyReturnPairs(dailyReturns) {
 function captureRatio(months, direction, comparisonKey = 'benchmark') {
   const relevant = months.filter((month) => (direction === 'up' ? month[comparisonKey] > 0 : month[comparisonKey] < 0));
   if (!relevant.length) return null;
-  const fundReturn = relevant.reduce((product, month) => product * (1 + month.fund), 1) - 1;
-  const comparisonReturn = relevant.reduce((product, month) => product * (1 + month[comparisonKey]), 1) - 1;
+  const annualisation = 12 / relevant.length;
+  const fundReturn = Math.pow(relevant.reduce((product, month) => product * (1 + month.fund), 1), annualisation) - 1;
+  const comparisonReturn = Math.pow(relevant.reduce((product, month) => product * (1 + month[comparisonKey]), 1), annualisation) - 1;
   return comparisonReturn !== 0 ? (fundReturn / comparisonReturn) * 100 : null;
 }
 
@@ -735,7 +782,7 @@ const categoryCapture = computed(() => {
 });
 
 const riskMetrics = computed(() => {
-  if (!history.value.length) return null;
+  if (isDistributionScheme.value || !history.value.length) return null;
   const fundOnlyReturns = fundDailyReturns(history.value, riskYears.value);
   if (fundOnlyReturns.length < 20) return null;
   const dailyReturns = benchmarkHistory.value.length ? commonDailyReturns(history.value, benchmarkHistory.value, riskYears.value) : [];
@@ -775,7 +822,7 @@ const riskMetrics = computed(() => {
 });
 
 const debtOneYearRisk = computed(() => {
-  if (!isDebtScheme.value) return null;
+  if (!isDebtScheme.value || isDistributionScheme.value) return null;
   const returns = fundDailyReturns(history.value, 1);
   if (returns.length < 20) return null;
   return {
@@ -799,9 +846,7 @@ const directRegularComparison = computed(() => {
   const months = directRegularRanges[directRegularRange.value];
   let start = commonPoints[0];
   if (months) {
-    const target = new Date(`${end.date}T00:00:00Z`);
-    target.setUTCMonth(target.getUTCMonth() - months);
-    start = latestPointOnOrBefore(commonPoints, target.toISOString().slice(0, 10));
+    start = latestPointOnOrBefore(commonPoints, subtractPeriod(end.date, months));
   }
   if (!start || start.date === end.date) return null;
   const principal = Number.isFinite(directRegularInvestment.value) && directRegularInvestment.value > 0
@@ -867,7 +912,9 @@ function sectorKey(value) {
 const usableHoldings = computed(() => holdings.value
   .filter((holding) => Number.isFinite(holding.weight)
     && holding.weight > 0
-    && holding.weight <= 1.05
+    // A small number of debt disclosures legitimately exceed 100% gross
+    // exposure because liabilities/derivatives offset the long position.
+    && holding.weight <= 5
     && !isDisclosureSummaryRow(holding)
     && !isDerivativeDisclosureRow(holding)));
 
@@ -974,6 +1021,7 @@ const selectedTerHistory = computed(() => (fundSnapshot.value.ter || [])
 const latestTer = computed(() => selectedTerHistory.value.at(-1) || null);
 const snapshotPlanLabel = computed(() => selectedTerHistory.value[0]?.plan_type === 'direct' ? 'Direct' : 'Regular');
 const isDebtScheme = computed(() => /^debt scheme\b/i.test(selected.value?.category || ''));
+const isDistributionScheme = computed(() => /\b(idcw|dividend|payout|reinvestment|bonus)\b|income distribution/i.test(selected.value?.name || ''));
 const debtSnapshot = computed(() => {
   if (!isDebtScheme.value || !selected.value) return null;
   return {
@@ -1017,9 +1065,7 @@ function buildRollingReturns(years) {
   const points = history.value;
   const results = [];
   for (const end of points) {
-    const target = new Date(`${end.date}T00:00:00Z`);
-    target.setUTCFullYear(target.getUTCFullYear() - years);
-    const start = latestPointOnOrBefore(points, target.toISOString().slice(0, 10));
+    const start = latestPointOnOrBefore(points, subtractCalendarYears(end.date, years));
     if (!start || start.date === end.date) continue;
     const elapsedDays = (Date.parse(`${end.date}T00:00:00Z`) - Date.parse(`${start.date}T00:00:00Z`)) / 86_400_000;
     const value = (Math.pow(end.nav / start.nav, 365.2425 / elapsedDays) - 1) * 100;
@@ -1039,14 +1085,12 @@ const chartHistory = computed(() => {
   const months = ranges[selectedRange.value];
   const latestDate = history.value.at(-1).date;
   if (!months) return history.value;
-  const cutoff = new Date(`${latestDate}T00:00:00Z`);
-  cutoff.setUTCMonth(cutoff.getUTCMonth() - months);
-  return history.value.filter((point) => point.date >= cutoff.toISOString().slice(0, 10));
+  return history.value.filter((point) => point.date >= subtractPeriod(latestDate, months));
 });
 
 const chartPoints = computed(() => {
   const fundPoints = chartHistory.value;
-  const benchmarkByDate = new Map(benchmarkHistory.value.map((point) => [point.date, point.value]));
+  const benchmarkByDate = new Map((isDistributionScheme.value ? [] : benchmarkHistory.value).map((point) => [point.date, point.value]));
   const alignedPoints = fundPoints
     .filter((point) => Number.isFinite(benchmarkByDate.get(point.date)))
     .map((point) => ({ ...point, benchmark: benchmarkByDate.get(point.date) }));
@@ -1125,7 +1169,7 @@ async function openScheme(schemeCode) {
     selectedRange.value = '1Y';
     directRegularRange.value = '5Y';
     riskYears.value = 3;
-    if (payload.scheme.category) {
+    if (payload.scheme.category && !/\b(idcw|dividend|payout|reinvestment|bonus)\b|income distribution/i.test(payload.scheme.name)) {
       categoryCaptureLoading.value = true;
       try {
         const peerResponse = await fetch(`/api/categories/${encodeURIComponent(payload.scheme.category)}/category-nav-history?plan=${encodeURIComponent(selectedCategoryPlan(payload.scheme.name))}&excludeScheme=${encodeURIComponent(payload.scheme.scheme_code)}`);
@@ -1183,7 +1227,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
     <header>
       <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
-      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="view = 'schemes'">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button></div>
+      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button></div>
     </header>
 
     <section v-if="view === 'quartiles' && !selected" class="card category-browser quartile-browser" aria-label="Category quartiles">
@@ -1215,7 +1259,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
 
     <section v-else-if="view === 'peers' && analysisMode === 'selected' && !selected" class="card compare-browser" aria-label="Fund comparison">
       <div class="analysis-mode-switch"><button :class="{ active: analysisMode === 'selected' }" @click="analysisMode = 'selected'">Selected funds</button><button :class="{ active: analysisMode === 'peers' }" @click="analysisMode = 'peers'">Category peers</button></div>
-      <div class="compare-intro"><div><p class="eyebrow">Comparison workspace</p><h2>Compare up to five schemes</h2><p>Returns and rolling averages are calculated from the stored NAV series in your browser.</p></div><span>{{ compareSelection.length }} / 5 selected</span></div>
+      <div class="compare-intro"><div><p class="eyebrow">Comparison workspace</p><h2>Compare up to five schemes</h2><p>Growth-plan returns and benchmark alpha are calculated from aligned source dates in your browser.</p></div><span>{{ compareSelection.length }} / 5 selected</span></div>
       <div class="compare-search"><input v-model="compareSearch" @keyup.enter="searchCompare" placeholder="Search a scheme to add"><button :disabled="compareLoading || compareSearch.trim().length < 2 || compareSelection.length >= 5" @click="searchCompare">{{ compareLoading ? 'Loading…' : 'Add scheme' }}</button></div>
       <p v-if="error" class="message error">{{ error }}</p>
       <div v-if="compareResults.length" class="compare-results"><button v-for="scheme in compareResults" :key="scheme.scheme_code" :disabled="compareSelection.some((item) => item.scheme.scheme_code === scheme.scheme_code) || compareSelection.length >= 5" @click="addToComparison(scheme)"><span><strong>{{ scheme.name }}</strong><small>{{ scheme.amc }} · {{ scheme.category || 'Category not supplied' }}</small></span><span>+ Add</span></button></div>
@@ -1230,12 +1274,13 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <div class="peer-controls">
         <div><label for="peer-main-category">Category</label><select id="peer-main-category" v-model="peerMainCategory" @change="selectPeerMainCategory"><option value="">Select a category</option><option v-for="category in peerMainCategories" :key="category" :value="category">{{ category }}</option></select></div>
         <div><label for="peer-category">Subcategory</label><select id="peer-category" v-model="peerCategory" :disabled="!peerMainCategory" @change="loadPeerAnalysis"><option value="">Select a subcategory</option><option v-for="category in peerSubcategories" :key="category.label" :value="category.label">{{ category.label }}</option></select></div>
-        <div><label for="peer-plan">Plans</label><select id="peer-plan" v-model="peerPlan" :disabled="!peerCategory" @change="loadPeerAnalysis"><option value="direct">Direct Growth</option><option value="regular">Regular Growth</option><option value="all-growth">All Growth plans</option><option value="direct-idcw">Direct IDCW</option><option value="regular-idcw">Regular IDCW</option></select></div>
+        <div><label for="peer-plan">Plans</label><select id="peer-plan" v-model="peerPlan" :disabled="!peerCategory" @change="loadPeerAnalysis"><option value="direct">Direct Growth</option><option value="regular">Regular Growth</option><option value="all-growth">All Growth plans</option></select></div>
       </div>
       <div class="peer-period"><span>Holding period</span><div class="period-buttons"><button v-for="years in [1, 2, 3, 4, 5]" :key="years" type="button" :class="{ active: peerPeriod === years }" :disabled="!peerRows.length" @click="setPeerPeriod(years)">{{ years }}Y</button></div></div>
-      <p v-if="peerBenchmark" class="peer-benchmark">Benchmark: <strong>{{ peerBenchmark.name }}</strong><small>{{ peerBenchmark.mapping_status }} category mapping · calculated in your browser from raw NAV and TRI observations</small></p>
+      <p v-if="peerBenchmark" class="peer-benchmark">Benchmark: <strong>{{ peerBenchmark.name }}</strong><small>{{ peerBenchmark.mapping_status }} category mapping · calculated in your browser from raw NAV and TRI observations<template v-if="peerBenchmarkMismatchCount"> · {{ peerBenchmarkMismatchCount }} selected-plan records excluded because AMFI reports a different benchmark</template></small></p>
       <p v-if="!peerCategory" class="message">Choose a category to analyse its peer funds.</p>
       <p v-else-if="peerLoading" class="message">Loading source histories and calculating rolling peer metrics…</p>
+      <p v-else-if="!peerBenchmarkHistoryAvailable" class="message">The mapped benchmark's TRI history is not available from an approved source, so alpha and consistency are not calculated.</p>
       <p v-else-if="!visiblePeerRows.length" class="message">No eligible Growth plans have enough matching NAV and benchmark TRI history for this period.</p>
       <div v-else class="peer-table-wrap"><div class="peer-table"><div class="peer-head"><span>Scheme</span><span>Fund avg</span><span>Benchmark avg</span><button type="button" class="peer-sort" @click="togglePeerSort('alpha')">Alpha {{ peerSort.key === 'alpha' ? (peerSort.direction === 'desc' ? '↓' : '↑') : '↕' }}</button><button type="button" class="peer-sort" @click="togglePeerSort('consistency')">Consistency {{ peerSort.key === 'consistency' ? (peerSort.direction === 'desc' ? '↓' : '↑') : '↕' }}</button></div><button v-for="row in visiblePeerRows" :key="row.scheme_code" class="peer-row" @click="openScheme(row.scheme_code)"><span><strong>{{ row.name }}</strong><small>{{ row.amc }}</small></span><strong data-label="Fund avg" :class="{ positive: row.metrics[peerPeriod].averageFund > 0, negative: row.metrics[peerPeriod].averageFund < 0 }">{{ row.metrics[peerPeriod].averageFund.toFixed(2) }}%</strong><strong data-label="Benchmark avg" :class="{ positive: row.metrics[peerPeriod].averageBenchmark > 0, negative: row.metrics[peerPeriod].averageBenchmark < 0 }">{{ row.metrics[peerPeriod].averageBenchmark.toFixed(2) }}%</strong><strong data-label="Alpha" :class="{ positive: row.metrics[peerPeriod].alpha > 0, negative: row.metrics[peerPeriod].alpha < 0 }">{{ row.metrics[peerPeriod].alpha >= 0 ? '+' : '' }}{{ row.metrics[peerPeriod].alpha.toFixed(2) }}%</strong><strong data-label="Consistency">{{ row.metrics[peerPeriod].consistency.toFixed(1) }}%</strong></button></div></div>
       <p v-if="visiblePeerRows.length" class="compare-footnote">Each window uses the same available fund NAV and benchmark TRI dates. Alpha means average fund return minus average benchmark return; consistency is the share of windows where the fund beat the benchmark.</p>
@@ -1244,7 +1289,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
     <section v-else-if="selected" class="detail card" aria-label="Scheme detail">
       <button class="back" @click="closeDetail">← All schemes</button>
       <div class="detail-heading">
-        <div><p class="eyebrow">{{ selected.category || selected.amc || 'AMFI scheme' }} · {{ selected.scheme_code }}</p><h2>{{ selected.name }}</h2><p class="scheme-category">{{ selected.amc }}<template v-if="selected.category"> · {{ selected.category }}</template></p><p v-if="selected.benchmark_name" class="benchmark-note"><span>Reference benchmark</span>{{ selected.benchmark_name }} <em>provisional category default</em></p></div>
+        <div><p class="eyebrow">{{ selected.category || selected.amc || 'AMFI scheme' }} · {{ selected.scheme_code }}</p><h2>{{ selected.name }}</h2><p class="scheme-category">{{ selected.amc }}<template v-if="selected.category"> · {{ selected.category }}</template></p><p v-if="selected.benchmark_name" class="benchmark-note"><span>Reference benchmark</span>{{ selected.benchmark_name }} <em>{{ selected.benchmark_mapping_status }}</em></p></div>
         <div class="nav"><strong>{{ formatNav(selected.latest_nav) }}</strong><span>NAV · {{ selected.latest_nav_date }}</span></div>
       </div>
       <section v-if="fundSnapshotLoading || latestAaum || latestTer || holdingPortfolio" class="fund-snapshot" aria-label="Fund snapshot">
@@ -1258,14 +1303,18 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         </div>
         <p v-if="!fundSnapshotLoading" class="snapshot-note">AAUM uses AMFI’s reported average AUM, not month-end AUM. TER is already reflected in NAV and is shown here as a separate cost observation.</p>
       </section>
-      <section class="returns" aria-label="Point-to-point returns">
+      <section v-if="!isDistributionScheme" class="returns" aria-label="Point-to-point returns">
         <div class="returns-heading"><div><p class="eyebrow">Return snapshot</p><h3>Point-to-point returns</h3></div><p>Latest NAV date<small>{{ selected.latest_nav_date }}</small></p></div>
         <div v-for="period in returnPeriods" :key="period.label" class="return-item">
           <span>{{ period.label }}<small v-if="period.annualised">annualised</small></span><strong :class="{ positive: period.value > 0, negative: period.value < 0 }">{{ period.value === null ? '—' : `${period.value >= 0 ? '+' : ''}${period.value.toFixed(2)}%` }}</strong>
         </div>
       </section>
+      <section v-else class="returns comparison-unavailable" aria-label="IDCW return availability">
+        <div class="returns-heading"><div><p class="eyebrow">Return snapshot</p><h3>Total return unavailable</h3></div></div>
+        <p class="benchmark-unavailable">An IDCW plan’s NAV falls when cash is distributed. Correct investor returns require the complete distribution cash-flow history, so NAV change alone is not presented as return.</p>
+      </section>
       <section v-if="benchmarkComparison" class="comparison-section" aria-label="Fund versus benchmark comparison">
-        <div class="comparison-heading"><div><p class="eyebrow">Fund vs benchmark</p><h3>{{ selected.benchmark_name }}</h3></div><p>Aligned to {{ benchmarkComparison.asOf }}<small>{{ selected.benchmark_mapping_status }} category default</small></p></div>
+        <div class="comparison-heading"><div><p class="eyebrow">Fund vs benchmark</p><h3>{{ selected.benchmark_name }}</h3></div><p>Aligned to {{ benchmarkComparison.asOf }}<small>{{ selected.benchmark_mapping_status }}</small></p></div>
         <div class="comparison-table">
           <div class="comparison-row comparison-labels"><span>Period</span><span>Fund</span><span>Benchmark</span><span>Outperformance</span></div>
           <div v-for="period in benchmarkComparison.periods" :key="period.label" class="comparison-row"><span>{{ period.label }}<small v-if="period.annualised">CAGR</small></span><strong :class="{ positive: period.fund > 0, negative: period.fund < 0 }">{{ period.fund === null ? '—' : `${period.fund >= 0 ? '+' : ''}${period.fund.toFixed(2)}%` }}</strong><strong :class="{ positive: period.benchmark > 0, negative: period.benchmark < 0 }">{{ period.benchmark === null ? '—' : `${period.benchmark >= 0 ? '+' : ''}${period.benchmark.toFixed(2)}%` }}</strong><strong :class="{ positive: period.outperformance > 0, negative: period.outperformance < 0 }">{{ period.outperformance === null ? '—' : `${period.outperformance >= 0 ? '+' : ''}${period.outperformance.toFixed(2)}%` }}</strong></div>
@@ -1274,7 +1323,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       </section>
       <section v-else class="comparison-section comparison-unavailable" aria-label="Fund versus benchmark availability">
         <div class="comparison-heading"><div><p class="eyebrow">Fund vs benchmark</p><h3>Benchmark comparison</h3></div></div>
-        <p class="benchmark-unavailable">{{ selected.benchmark_name ? `${selected.benchmark_name} is mapped as a ${selected.benchmark_mapping_status} category default, but its TRI history is not available from the approved source.` : 'No category-wide benchmark is assigned to this scheme. Sectoral and thematic funds need their individually stated benchmark; a broad-market substitute would be misleading.' }}</p>
+        <p class="benchmark-unavailable">{{ isDistributionScheme ? 'Benchmark outperformance is not calculated for IDCW plans until distribution cash flows are available.' : selected.benchmark_mapping_status === 'AMFI reported; TRI unavailable' ? `AMFI reports ${selected.benchmark_name} for this scheme, but its TRI history is not available from an approved source. A different category index is not substituted.` : selected.benchmark_name ? `${selected.benchmark_name} is mapped as a ${selected.benchmark_mapping_status} category default, but its TRI history is not available from the approved source.` : 'No category-wide benchmark is assigned to this scheme. Sectoral and thematic funds need their individually stated benchmark; a broad-market substitute would be misleading.' }}</p>
       </section>
       <section v-if="riskMetrics" class="risk-section" aria-label="Risk and resilience analysis">
         <div class="risk-heading"><div><p class="eyebrow">Risk & resilience</p><h3>How the fund behaved on the way</h3></div><div class="range-controls"><button v-for="years in [1, 3, 5]" :key="years" :class="{ active: riskYears === years }" @click="riskYears = years">{{ years }}Y</button></div></div>
@@ -1294,7 +1343,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       </section>
       <section v-else class="risk-section risk-unavailable" aria-label="Risk and resilience availability">
         <div class="risk-heading"><div><p class="eyebrow">Risk & resilience</p><h3>How the fund behaved on the way</h3></div></div>
-        <p class="benchmark-unavailable">Risk measures versus a benchmark need matched daily fund NAV and benchmark TRI observations. They will appear once an approved benchmark TRI series is available for this scheme.</p>
+        <p class="benchmark-unavailable">{{ isDistributionScheme ? 'Return-based risk measures are not calculated for IDCW plans until distribution cash flows are available.' : 'Risk measures versus a benchmark need matched daily fund NAV and benchmark TRI observations. They will appear once an approved benchmark TRI series is available for this scheme.' }}</p>
       </section>
       <section v-if="debtSnapshot" class="fund-snapshot debt-snapshot" aria-label="Debt fund snapshot">
         <div class="snapshot-heading"><div><p class="eyebrow">Debt snapshot</p><h3>Rate, credit & cost view</h3></div><p>Current source data<small>Latest mapped portfolio disclosure</small></p></div>
@@ -1375,7 +1424,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <div class="scheme-navigation-filters">
           <label><span>Category</span><select v-model="schemeMainCategory" :disabled="loading" @change="selectSchemeMainCategory"><option value="">All categories</option><option v-for="category in schemeMainCategories" :key="category" :value="category">{{ category }}</option></select></label>
           <label><span>Subcategory</span><select v-model="schemeSubcategory" :disabled="loading || !schemeMainCategory" @change="updateSchemeFilter"><option value="">All subcategories</option><option v-for="subcategory in schemeSubcategories" :key="subcategory.label" :value="subcategory.label">{{ subcategory.label }}</option></select></label>
-          <label><span>Plan</span><select v-model="schemePlan" :disabled="loading" @change="updateSchemeFilter"><option value="all">All plans</option><option value="direct">Direct</option><option value="regular">Regular Growth</option><option value="idcw">IDCW</option></select></label>
+          <label><span>Plan</span><select v-model="schemePlan" :disabled="loading" @change="updateSchemeFilter"><option value="all">All plans</option><option value="direct">Direct Growth</option><option value="regular">Regular Growth</option><option value="idcw">IDCW</option></select></label>
           <div class="scheme-structure-control"><span>Fund structure</span><div class="period-buttons"><button v-for="option in [{ value: 'all', label: 'All' }, { value: 'open', label: 'Open-ended' }, { value: 'closed', label: 'Close-ended' }]" :key="option.value" type="button" :class="{ active: schemeStructure === option.value }" :disabled="loading" @click="setSchemeStructure(option.value)">{{ option.label }}</button></div></div>
         </div>
       </div>

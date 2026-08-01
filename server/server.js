@@ -8,17 +8,64 @@ app.use(express.json());
 
 function growthPlanType(name) {
   const normalized = String(name || '').toLowerCase();
-  if (!normalized.includes('growth') || /\b(idcw|dividend|payout|reinvestment|bonus)\b/.test(normalized)) return null;
+  if (!normalized.includes('growth') || /\b(idcw|dividend|payout|reinvestment|bonus)\b|income distribution/.test(normalized)) return null;
   return /\bdirect\b/.test(normalized) ? 'direct' : 'regular';
+}
+
+function isNonStandardPlanName(name) {
+  const normalized = String(name || '').toLowerCase();
+  return /\b(discontinued|defunct|segregated|institutional|retail|premium|wholesale|provident|unclaimed)\b/.test(normalized)
+    || /investor education|super institutional|\bpf\b|\beco\b|\bplan\s+[bc]\b/.test(normalized);
 }
 
 function quartilePlanType(name) {
   const normalized = String(name || '').toLowerCase();
   if (!normalized.includes('growth')) return null;
-  if (/\b(idcw|dividend|payout|reinvestment|bonus)\b/.test(normalized)) return null;
-  if (/\b(discontinued|defunct|segregated|institutional|retail|premium|wholesale|provident|unclaimed)\b/.test(normalized)) return null;
-  if (/investor education|super institutional|\bpf\b/.test(normalized)) return null;
+  if (/\b(idcw|dividend|payout|reinvestment|bonus)\b|income distribution/.test(normalized)) return null;
+  if (isNonStandardPlanName(normalized)) return null;
   return /\bdirect\b/.test(normalized) ? 'direct' : 'regular';
+}
+
+function idcwPlanType(name) {
+  const normalized = String(name || '').toLowerCase();
+  if (!/\b(idcw|dividend|payout|reinvestment)\b|income distribution/.test(normalized)) return null;
+  if (isNonStandardPlanName(normalized)) return null;
+  return /\bdirect\b/.test(normalized) ? 'direct' : 'regular';
+}
+
+function explicitPlanPreference(name, type) {
+  const normalized = String(name || '').toLowerCase();
+  return type === 'direct' ? (/\bdirect\b/.test(normalized) ? 2 : 1) : (/\bregular\b/.test(normalized) ? 2 : 1);
+}
+
+function eligiblePeerPlan(name, plan) {
+  const growthType = quartilePlanType(name);
+  const distributionType = idcwPlanType(name);
+  if (plan === 'direct') return growthType === 'direct';
+  if (plan === 'regular') return growthType === 'regular';
+  if (plan === 'all-growth') return Boolean(growthType);
+  if (plan === 'direct-idcw') return distributionType === 'direct';
+  if (plan === 'regular-idcw') return distributionType === 'regular';
+  return false;
+}
+
+function dedupePeerSchemes(schemes, plan) {
+  const growthSelection = ['direct', 'regular', 'all-growth'].includes(plan);
+  if (!growthSelection) return schemes;
+  const families = new Map();
+  for (const scheme of schemes) {
+    const type = quartilePlanType(scheme.name);
+    if (!type) continue;
+    const key = `${scheme.amc || ''}|${type}|${planFamily(scheme.name)}`;
+    const existing = families.get(key);
+    if (!existing
+      || scheme.latest_nav_date > existing.latest_nav_date
+      || (scheme.latest_nav_date === existing.latest_nav_date
+        && explicitPlanPreference(scheme.name, type) > explicitPlanPreference(existing.name, type))) {
+      families.set(key, scheme);
+    }
+  }
+  return [...families.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function planFamily(name) {
@@ -43,6 +90,25 @@ function explicitTerPlan(name) {
 
 function daysBetween(left, right) {
   return Math.round((Date.parse(`${right}T00:00:00Z`) - Date.parse(`${left}T00:00:00Z`)) / 86_400_000);
+}
+
+function normalizedBenchmarkName(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/([a-z])([0-9])/g, '$1 $2')
+    .replace(/([0-9])([a-z])/g, '$1 $2')
+    .replace(/\btotal return index\b|\btri\b|\bbenchmark\b|\bindex\b/g, ' ')
+    .replace(/\b[abc][ -]?(?:i|ii|iii|iv)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function benchmarkNamesMatch(mappedName, reportedName) {
+  const mapped = normalizedBenchmarkName(mappedName);
+  const reported = normalizedBenchmarkName(reportedName);
+  return Boolean(mapped && reported && mapped === reported);
 }
 
 // Select raw, plan-specific AMFI TER observations without calculating a return.
@@ -109,7 +175,7 @@ app.get('/api/schemes', (request, response) => {
     // An invalid filter must not change the search result set.
   }
   const escapeLike = (value) => `%${value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
-  const queryTerms = query.split(/\s+/).filter(Boolean).slice(0, 5);
+  const queryTerms = query.split(/\s+/).filter(Boolean).slice(0, 10);
   const nameConditions = queryTerms.length
     ? queryTerms.map(() => "s.name LIKE ? ESCAPE '\\'").join(' AND ')
     : '1 = 1';
@@ -119,13 +185,32 @@ app.get('/api/schemes', (request, response) => {
     : structure === 'open'
       ? `NOT ${closeEndedCondition}`
       : '1 = 1';
-  const idcwCondition = `(LOWER(s.name) LIKE '%idcw%' OR LOWER(s.name) LIKE '%dividend%' OR LOWER(s.name) LIKE '%payout%' OR LOWER(s.name) LIKE '%reinvestment%' OR LOWER(s.name) LIKE '%bonus%')`;
+  const idcwCondition = `(LOWER(s.name) LIKE '%idcw%' OR LOWER(s.name) LIKE '%income distribution%' OR LOWER(s.name) LIKE '%dividend%' OR LOWER(s.name) LIKE '%payout%' OR LOWER(s.name) LIKE '%reinvestment%' OR LOWER(s.name) LIKE '%bonus%')`;
+  const growthCondition = `LOWER(s.name) LIKE '%growth%' AND NOT ${idcwCondition}`;
+  const standardCondition = `LOWER(s.name) NOT LIKE '%institutional%'
+    AND LOWER(s.name) NOT LIKE '%retail%'
+    AND LOWER(s.name) NOT LIKE '%premium%'
+    AND LOWER(s.name) NOT LIKE '%wholesale%'
+    AND LOWER(s.name) NOT LIKE '%provident%'
+    AND LOWER(s.name) NOT LIKE '% pf %'
+    AND LOWER(s.name) NOT LIKE '%discontinued%'
+    AND LOWER(s.name) NOT LIKE '%defunct%'
+    AND LOWER(s.name) NOT LIKE '%segregated%'
+    AND LOWER(s.name) NOT LIKE '%unclaimed%'
+    AND LOWER(s.name) NOT LIKE '%investor education%'
+    AND LOWER(s.name) NOT LIKE '%super institutional%'
+    AND LOWER(s.name) NOT LIKE '% eco %'
+    AND LOWER(s.name) NOT LIKE '%eco plan%'
+    AND LOWER(s.name) NOT LIKE '%plan b%'
+    AND LOWER(s.name) NOT LIKE '%plan c%'`;
   const planCondition = plan === 'direct'
-    ? `LOWER(s.name) LIKE '%direct%'`
+    ? `${growthCondition} AND LOWER(s.name) LIKE '%direct%' AND ${standardCondition}`
     : plan === 'regular'
-      ? `LOWER(s.name) NOT LIKE '%direct%' AND NOT ${idcwCondition}`
+      ? `${growthCondition} AND LOWER(s.name) NOT LIKE '%direct%' AND ${standardCondition}`
+      : plan === 'growth'
+        ? `${growthCondition} AND ${standardCondition}`
       : plan === 'idcw'
-        ? idcwCondition
+        ? `${idcwCondition} AND ${standardCondition}`
         : '1 = 1';
   const categoryCondition = sourceCategories.length
     ? `s.category IN (${sourceCategories.map(() => '?').join(', ')})`
@@ -142,6 +227,11 @@ app.get('/api/schemes', (request, response) => {
       AND ${structureCondition}
       AND ${planCondition}
       AND ${categoryCondition}
+      AND EXISTS (
+        SELECT 1 FROM nav_daily current_nav
+        WHERE current_nav.scheme_code = s.scheme_code
+          AND current_nav.date >= (SELECT date(MAX(date), '-14 days') FROM nav_daily)
+      )
     ORDER BY s.name COLLATE NOCASE
     LIMIT ?
   `).all(...parameters);
@@ -154,21 +244,28 @@ app.get('/api/schemes/:schemeCode/nav-history', (request, response) => {
     SELECT s.scheme_code, s.name, s.amc, s.category, b.benchmark_id, b.name AS benchmark_name, cbd.mapping_status AS benchmark_mapping_status,
       (SELECT nav FROM nav_daily WHERE scheme_code = s.scheme_code ORDER BY date DESC LIMIT 1) AS latest_nav,
       (SELECT date FROM nav_daily WHERE scheme_code = s.scheme_code ORDER BY date DESC LIMIT 1) AS latest_nav_date,
-      a.daily_aum_crore AS total_aum_crore,
-      a.date AS total_aum_date,
-      a.disclosure_marker AS total_aum_disclosure_marker,
-      a.riskometer_scheme,
-      a.riskometer_benchmark AS amfi_riskometer_benchmark,
-      a.benchmark_name AS amfi_benchmark_name
+      (SELECT a.daily_aum_crore FROM scheme_total_aum_mappings m JOIN scheme_total_aum_daily a ON a.source_scheme_key = m.source_scheme_key WHERE m.scheme_code = s.scheme_code ORDER BY a.date DESC LIMIT 1) AS total_aum_crore,
+      (SELECT a.date FROM scheme_total_aum_mappings m JOIN scheme_total_aum_daily a ON a.source_scheme_key = m.source_scheme_key WHERE m.scheme_code = s.scheme_code ORDER BY a.date DESC LIMIT 1) AS total_aum_date,
+      (SELECT a.disclosure_marker FROM scheme_total_aum_mappings m JOIN scheme_total_aum_daily a ON a.source_scheme_key = m.source_scheme_key WHERE m.scheme_code = s.scheme_code ORDER BY a.date DESC LIMIT 1) AS total_aum_disclosure_marker,
+      (SELECT a.riskometer_scheme FROM scheme_total_aum_mappings m JOIN scheme_total_aum_daily a ON a.source_scheme_key = m.source_scheme_key WHERE m.scheme_code = s.scheme_code ORDER BY a.date DESC LIMIT 1) AS riskometer_scheme,
+      (SELECT a.riskometer_benchmark FROM scheme_total_aum_mappings m JOIN scheme_total_aum_daily a ON a.source_scheme_key = m.source_scheme_key WHERE m.scheme_code = s.scheme_code ORDER BY a.date DESC LIMIT 1) AS amfi_riskometer_benchmark,
+      (SELECT a.benchmark_name FROM scheme_total_aum_mappings m JOIN scheme_total_aum_daily a ON a.source_scheme_key = m.source_scheme_key WHERE m.scheme_code = s.scheme_code ORDER BY a.date DESC LIMIT 1) AS amfi_benchmark_name
     FROM schemes s
     LEFT JOIN category_benchmark_defaults cbd ON cbd.category = s.category
     LEFT JOIN benchmarks b ON b.benchmark_id = cbd.benchmark_id
-    LEFT JOIN scheme_total_aum_mappings m ON m.scheme_code = s.scheme_code
-    LEFT JOIN scheme_total_aum_daily a ON a.source_scheme_key = m.source_scheme_key
-      AND a.date = (SELECT MAX(date) FROM scheme_total_aum_daily)
     WHERE s.scheme_code = ?
   `).get(request.params.schemeCode);
   if (!scheme) return response.status(404).json({ error: 'Scheme not found' });
+
+  if (scheme.amfi_benchmark_name) {
+    if (scheme.benchmark_name && benchmarkNamesMatch(scheme.benchmark_name, scheme.amfi_benchmark_name)) {
+      scheme.benchmark_mapping_status = 'AMFI benchmark match';
+    } else {
+      scheme.benchmark_id = null;
+      scheme.benchmark_name = scheme.amfi_benchmark_name;
+      scheme.benchmark_mapping_status = 'AMFI reported; TRI unavailable';
+    }
+  }
 
   const history = db.prepare(`
     SELECT date, nav FROM nav_daily
@@ -193,15 +290,24 @@ app.get('/api/schemes/:schemeCode/nav-history', (request, response) => {
   let planPairHistory = [];
   if (selectedPlanType && scheme.amc) {
     const candidates = db.prepare(`
-      SELECT scheme_code, name, amc, category
+      SELECT scheme_code, name, amc, category,
+        (SELECT MAX(date) FROM nav_daily WHERE scheme_code = schemes.scheme_code) AS latest_nav_date
       FROM schemes
       WHERE amc = ? AND category IS ? AND scheme_code <> ? AND LOWER(name) LIKE '%growth%'
     `).all(scheme.amc, scheme.category, scheme.scheme_code);
     const wantedType = selectedPlanType === 'direct' ? 'regular' : 'direct';
     const selectedFamily = planFamily(scheme.name);
-    planPair = candidates.find((candidate) => (
-      growthPlanType(candidate.name) === wantedType && planFamily(candidate.name) === selectedFamily
-    )) || null;
+    planPair = candidates
+      .filter((candidate) => (
+        candidate.latest_nav_date
+        && quartilePlanType(candidate.name) === wantedType
+        && planFamily(candidate.name) === selectedFamily
+        && daysBetween(candidate.latest_nav_date, scheme.latest_nav_date) <= 14
+      ))
+      .sort((left, right) => (
+        right.latest_nav_date.localeCompare(left.latest_nav_date)
+        || explicitPlanPreference(right.name, wantedType) - explicitPlanPreference(left.name, wantedType)
+      ))[0] || null;
     if (planPair) {
       planPairHistory = db.prepare(`
         SELECT date, nav FROM nav_daily
@@ -221,6 +327,8 @@ app.get('/api/schemes/:schemeCode/holdings', (request, response) => {
     JOIN portfolio_holdings h ON h.portfolio_id = p.portfolio_id
     WHERE m.scheme_code = ?
     GROUP BY p.portfolio_id, p.amc, p.name, p.source_fund_code
+    ORDER BY as_of_date DESC
+    LIMIT 1
   `).get(request.params.schemeCode);
   if (!portfolio) return response.status(404).json({ error: 'No verified monthly portfolio disclosure is available for this scheme yet.' });
 
@@ -363,8 +471,8 @@ app.get('/api/categories/:category/nav-snapshot', (request, response) => {
 app.get('/api/categories/:category/peer-nav-history', (request, response) => {
   const category = request.params.category;
   const plan = String(request.query.plan || 'direct');
-  if (!['direct', 'regular', 'all-growth', 'direct-idcw', 'regular-idcw'].includes(plan)) {
-    return response.status(400).json({ error: 'plan must be direct, regular, all-growth, direct-idcw, or regular-idcw' });
+  if (!['direct', 'regular', 'all-growth'].includes(plan)) {
+    return response.status(400).json({ error: 'plan must be direct, regular, or all-growth' });
   }
   let requestedCategories = [category];
   if (request.query.categories) {
@@ -402,14 +510,29 @@ app.get('/api/categories/:category/peer-nav-history', (request, response) => {
         : plan === 'regular-idcw'
           ? `${idcwOnly} AND LOWER(s.name) NOT LIKE '%direct%'`
           : growthOnly;
-  const schemes = db.prepare(`
-    SELECT s.scheme_code, s.name, s.amc, s.category
+  let schemes = db.prepare(`
+    SELECT s.scheme_code, s.name, s.amc, s.category,
+      (SELECT MAX(date) FROM nav_daily WHERE scheme_code = s.scheme_code) AS latest_nav_date,
+      (SELECT a.benchmark_name FROM scheme_total_aum_mappings m JOIN scheme_total_aum_daily a ON a.source_scheme_key = m.source_scheme_key WHERE m.scheme_code = s.scheme_code AND TRIM(COALESCE(a.benchmark_name, '')) <> '' ORDER BY a.date DESC LIMIT 1) AS reported_benchmark_name
     FROM schemes s
     WHERE s.category IN (${requestedCategories.map(() => '?').join(', ')})
       AND ${growthCondition}
       AND EXISTS (SELECT 1 FROM nav_daily n WHERE n.scheme_code = s.scheme_code AND n.date >= '2010-01-01')
     ORDER BY s.name COLLATE NOCASE
   `).all(...requestedCategories);
+  const latestPeerNavDate = db.prepare('SELECT MAX(date) AS date FROM nav_daily').get().date;
+  schemes = schemes.filter((scheme) => (
+    eligiblePeerPlan(scheme.name, plan)
+    && scheme.latest_nav_date
+    && daysBetween(scheme.latest_nav_date, latestPeerNavDate) <= 14
+  ));
+  let benchmarkMismatchCount = 0;
+  schemes = schemes.filter((scheme) => {
+    const mismatch = scheme.reported_benchmark_name && !benchmarkNamesMatch(benchmark.name, scheme.reported_benchmark_name);
+    if (mismatch) benchmarkMismatchCount += 1;
+    return !mismatch;
+  });
+  schemes = dedupePeerSchemes(schemes, plan);
   const navRows = schemes.length
     ? db.prepare(`
       SELECT scheme_code, date, nav
@@ -427,7 +550,7 @@ app.get('/api/categories/:category/peer-nav-history', (request, response) => {
 
   const histories = Object.fromEntries(schemes.map((scheme) => [scheme.scheme_code, []]));
   for (const row of navRows) histories[row.scheme_code]?.push({ date: row.date, nav: row.nav });
-  response.json({ category, categories: requestedCategories, plan, benchmark, schemes, histories, benchmark_history: benchmarkHistory });
+  response.json({ category, categories: requestedCategories, plan, benchmark, benchmark_mismatch_count: benchmarkMismatchCount, schemes, histories, benchmark_history: benchmarkHistory });
 });
 
 app.get('/api/categories/:category/category-nav-history', (request, response) => {
@@ -450,8 +573,9 @@ app.get('/api/categories/:category/category-nav-history', (request, response) =>
           : growthOnly;
   // Raw daily NAV observations only. Six years covers the 1/3/5Y selector,
   // while the equal-weighted peer category series is calculated in the browser.
-  const schemes = db.prepare(`
-    SELECT s.scheme_code
+  let schemes = db.prepare(`
+    SELECT s.scheme_code, s.name, s.amc,
+      (SELECT MAX(date) FROM nav_daily WHERE scheme_code = s.scheme_code) AS latest_nav_date
     FROM schemes s
     WHERE s.category = ?
       AND s.scheme_code <> ?
@@ -462,6 +586,12 @@ app.get('/api/categories/:category/category-nav-history', (request, response) =>
           AND n.date >= (SELECT date(MAX(date), '-6 years') FROM nav_daily)
       )
   `).all(category, excludeScheme);
+  const latestNavDate = db.prepare('SELECT MAX(date) AS date FROM nav_daily').get().date;
+  schemes = dedupePeerSchemes(schemes.filter((scheme) => (
+    eligiblePeerPlan(scheme.name, plan)
+    && scheme.latest_nav_date
+    && daysBetween(scheme.latest_nav_date, latestNavDate) <= 14
+  )), plan);
   const navRows = schemes.length
     ? db.prepare(`
       SELECT scheme_code, date, nav

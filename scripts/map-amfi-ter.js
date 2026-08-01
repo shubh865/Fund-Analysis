@@ -31,10 +31,48 @@ function planType(name) {
   return 'regular';
 }
 
+function optionType(name) {
+  const normalized = String(name || '').toLowerCase();
+  if (/\b(idcw|dividend)\b|income\s+distribution/.test(normalized)) return 'idcw';
+  if (/\bgrowth\b/.test(normalized)) return 'growth';
+  return null;
+}
+
+function normalizeCategory(category) {
+  const label = String(category || '')
+    .toLowerCase()
+    .replace(/^(equity|debt|hybrid) schemes? - /, '')
+    .replace(/^income\/debt oriented schemes - /, '')
+    .trim();
+  const aliases = {
+    'banking and psu debt fund': 'banking and psu fund',
+    'dynamic term fund': 'dynamic bond',
+    'medium term fund': 'medium duration fund',
+    'short term fund': 'short duration fund',
+    'ultra short term fund': 'ultra short duration fund',
+    'ultra short to short term fund': 'ultra short duration fund',
+    'elss- tax saver fund': 'elss',
+    'balanced advantage fund/ dynamic asset allocation': 'dynamic asset allocation or balanced advantage',
+    'equity savings fund': 'equity savings',
+    'multi asset allocation fund': 'multi asset allocation',
+  };
+  return aliases[label] || label;
+}
+
+// A source key can contain an incorrect historical label that AMFI/NSDL later
+// corrected (and, rarely, a key that was reused for another scheme). Identify
+// every key by its latest published row, while retaining all of that key's
+// older observations after the correct key has been selected.
 const terSources = db.prepare(`
-  SELECT source_scheme_key, scheme_name, MAX(date) AS latest_date
-  FROM scheme_ter_daily
-  GROUP BY source_scheme_key, scheme_name
+  SELECT d.source_scheme_key, d.scheme_name, d.category, d.date AS latest_date
+  FROM scheme_ter_daily d
+  JOIN (
+    SELECT source_scheme_key, MAX(date) AS latest_date
+    FROM scheme_ter_daily
+    GROUP BY source_scheme_key
+  ) latest
+    ON latest.source_scheme_key = d.source_scheme_key
+   AND latest.latest_date = d.date
 `).all();
 
 const sourceByName = new Map();
@@ -46,7 +84,7 @@ for (const source of terSources) {
   sourceByName.set(key, matches);
 }
 
-const schemes = db.prepare('SELECT scheme_code, name FROM schemes').all();
+const schemes = db.prepare('SELECT scheme_code, name, category FROM schemes').all();
 const insert = db.prepare(`
   INSERT INTO scheme_ter_mappings (scheme_code, source_scheme_key, plan_type, mapping_status, updated_at)
   VALUES (?, ?, ?, 'provisional', CURRENT_TIMESTAMP)
@@ -65,11 +103,15 @@ const transaction = db.transaction(() => {
   clear.run();
   for (const scheme of schemes) {
     const type = planType(scheme.name);
+    const schemeOption = optionType(scheme.name);
     if (!type) {
       unsupportedPlan += 1;
       continue;
     }
-    const candidates = sourceByName.get(normalizeFundName(scheme.name)) || [];
+    const candidates = (sourceByName.get(normalizeFundName(scheme.name)) || []).filter((source) => (
+      (!scheme.category || !source.category || normalizeCategory(source.category) === normalizeCategory(scheme.category))
+      && (!schemeOption || !optionType(source.scheme_name) || schemeOption === optionType(source.scheme_name))
+    ));
     if (!candidates.length) continue;
     if (candidates.length > 1) multiSourceSchemes += 1;
     for (const candidate of candidates) {
