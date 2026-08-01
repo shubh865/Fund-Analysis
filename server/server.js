@@ -343,6 +343,40 @@ app.get('/api/schemes/:schemeCode/holdings', (request, response) => {
   response.json({ portfolio, holdings });
 });
 
+app.get('/api/schemes/:schemeCode/holdings/history', (request, response) => {
+  const portfolio = db.prepare(`
+    SELECT p.portfolio_id, p.amc, p.name, p.source_fund_code, MAX(h.as_of_date) AS as_of_date
+    FROM scheme_portfolio_mappings m
+    JOIN holding_portfolios p ON p.portfolio_id = m.portfolio_id
+    JOIN portfolio_holdings h ON h.portfolio_id = p.portfolio_id
+    WHERE m.scheme_code = ?
+    GROUP BY p.portfolio_id, p.amc, p.name, p.source_fund_code
+    ORDER BY as_of_date DESC
+    LIMIT 1
+  `).get(request.params.schemeCode);
+  if (!portfolio) return response.status(404).json({ error: 'No verified monthly portfolio disclosure is available for this scheme yet.' });
+
+  const dates = db.prepare(`
+    SELECT DISTINCT as_of_date
+    FROM portfolio_holdings
+    WHERE portfolio_id = ?
+    ORDER BY as_of_date DESC
+    LIMIT 2
+  `).all(portfolio.portfolio_id).map((row) => row.as_of_date);
+  const positions = db.prepare(`
+    SELECT asset_class, holding_group, instrument_name, isin, industry_or_rating,
+      quantity, market_value_lakh, weight, yield, yield_to_call
+    FROM portfolio_holdings
+    WHERE portfolio_id = ? AND as_of_date = ?
+    ORDER BY position_order
+  `);
+  // Raw snapshots only. All change calculations remain in the browser.
+  response.json({
+    portfolio,
+    snapshots: dates.map((as_of_date) => ({ as_of_date, holdings: positions.all(portfolio.portfolio_id, as_of_date) })),
+  });
+});
+
 app.get('/api/schemes/:schemeCode/fund-snapshot', (request, response) => {
   const scheme = db.prepare('SELECT scheme_code, name FROM schemes WHERE scheme_code = ?').get(request.params.schemeCode);
   if (!scheme) return response.status(404).json({ error: 'Scheme not found' });

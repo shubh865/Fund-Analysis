@@ -12,6 +12,7 @@ The product is designed for analysis rather than a static return screener: sourc
 - Compare up to five schemes, including NAV, total AUM, 1/3/5-year returns and benchmark alpha.
 - Analyse category peers using rolling-return averages, alpha and benchmark-beating consistency.
 - Compare two disclosed portfolios using ISIN-matched holding overlap, sector overlap and top-10 concentration.
+- Track additions, exits, weight changes, sector shifts and concentration changes once two monthly disclosures are available.
 - Rank category peers in quartiles, with Direct and Regular Growth shown side-by-side.
 - Review AMFI AAUM, daily TER, current scheme-level AUM and available monthly portfolio disclosures.
 - Provide top holdings, sector allocation and debt holding/rating summaries where the corresponding AMC disclosure has been ingested and mapped.

@@ -60,6 +60,11 @@ const overlapSearch = ref('');
 const overlapResults = ref([]);
 const overlapSelection = ref([]);
 const overlapLoading = ref(false);
+const portfolioChangeSearch = ref('');
+const portfolioChangeResults = ref([]);
+const portfolioChangeScheme = ref(null);
+const portfolioChangeSnapshots = ref([]);
+const portfolioChangeLoading = ref(false);
 let searchTimer;
 
 const displaySchemes = computed(() => schemes.value.slice(0, 50));
@@ -358,6 +363,12 @@ function showPortfolioOverlap() {
   overlapResults.value = [];
 }
 
+function showPortfolioChanges() {
+  closeDetail();
+  view.value = 'changes';
+  portfolioChangeResults.value = [];
+}
+
 function showSchemes() {
   closeDetail();
   view.value = 'schemes';
@@ -564,6 +575,49 @@ async function addToPortfolioOverlap(scheme) {
 
 function removeFromPortfolioOverlap(schemeCode) {
   overlapSelection.value = overlapSelection.value.filter((item) => item.scheme.scheme_code !== schemeCode);
+}
+
+async function searchPortfolioChanges() {
+  const query = portfolioChangeSearch.value.trim();
+  if (query.length < 2) return;
+  portfolioChangeLoading.value = true;
+  error.value = '';
+  try {
+    const response = await fetch(`/api/schemes?q=${encodeURIComponent(query)}&limit=12&plan=growth`);
+    if (!response.ok) throw new Error('Could not search schemes for portfolio changes.');
+    portfolioChangeResults.value = (await response.json()).schemes;
+  } catch (requestError) {
+    error.value = requestError.message;
+  } finally {
+    portfolioChangeLoading.value = false;
+  }
+}
+
+async function selectPortfolioChangeScheme(scheme) {
+  portfolioChangeLoading.value = true;
+  error.value = '';
+  portfolioChangeSnapshots.value = [];
+  try {
+    const response = await fetch(`/api/schemes/${encodeURIComponent(scheme.scheme_code)}/holdings/history`);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || 'No verified monthly portfolio disclosure is available for this scheme yet.');
+    }
+    const payload = await response.json();
+    portfolioChangeScheme.value = { scheme, portfolio: payload.portfolio };
+    portfolioChangeSnapshots.value = payload.snapshots || [];
+    portfolioChangeSearch.value = '';
+    portfolioChangeResults.value = [];
+  } catch (requestError) {
+    error.value = requestError.message;
+  } finally {
+    portfolioChangeLoading.value = false;
+  }
+}
+
+function clearPortfolioChangeScheme() {
+  portfolioChangeScheme.value = null;
+  portfolioChangeSnapshots.value = [];
 }
 
 function queueSearch() {
@@ -1094,6 +1148,46 @@ const portfolioOverlap = computed(() => {
   };
 });
 
+const portfolioChanges = computed(() => {
+  if (portfolioChangeSnapshots.value.length < 2) return null;
+  const [current, previous] = portfolioChangeSnapshots.value;
+  const currentByIsin = holdingByIsin(current.holdings);
+  const previousByIsin = holdingByIsin(previous.holdings);
+  const additions = [];
+  const exits = [];
+  const increases = [];
+  const reductions = [];
+  for (const [isin, holding] of currentByIsin) {
+    const prior = previousByIsin.get(isin);
+    if (!prior) additions.push({ ...holding, change: holding.weight });
+    else if (holding.weight - prior.weight >= 0.001) increases.push({ ...holding, previousWeight: prior.weight, change: holding.weight - prior.weight });
+    else if (prior.weight - holding.weight >= 0.001) reductions.push({ ...holding, previousWeight: prior.weight, change: holding.weight - prior.weight });
+  }
+  for (const [isin, holding] of previousByIsin) {
+    if (!currentByIsin.has(isin)) exits.push({ ...holding, change: -holding.weight });
+  }
+  const currentSectors = allocationBySector(current.holdings);
+  const previousSectors = allocationBySector(previous.holdings);
+  const sectorKeys = new Set([...currentSectors.keys(), ...previousSectors.keys()]);
+  const sectorChanges = [...sectorKeys].map((key) => {
+    const latest = currentSectors.get(key);
+    const prior = previousSectors.get(key);
+    return { name: latest?.name || prior?.name || key, currentWeight: latest?.weight || 0, previousWeight: prior?.weight || 0, change: (latest?.weight || 0) - (prior?.weight || 0) };
+  }).filter((item) => Math.abs(item.change) >= 0.001).sort((left, right) => Math.abs(right.change) - Math.abs(left.change)).slice(0, 6);
+  return {
+    currentDate: current.as_of_date,
+    previousDate: previous.as_of_date,
+    newHoldingCount: additions.length,
+    exitedHoldingCount: exits.length,
+    additions: additions.sort((left, right) => right.weight - left.weight).slice(0, 5),
+    exits: exits.sort((left, right) => right.weight - left.weight).slice(0, 5),
+    increases: increases.sort((left, right) => right.change - left.change).slice(0, 5),
+    reductions: reductions.sort((left, right) => left.change - right.change).slice(0, 5),
+    sectorChanges,
+    topTenChange: topTenWeight(current.holdings) - topTenWeight(previous.holdings),
+  };
+});
+
 function maturityDateFromHolding(name) {
   const value = String(name || '');
   const numeric = value.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\b/);
@@ -1384,7 +1478,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
     <header>
       <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
-      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button></div>
+      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button><button :class="{ active: view === 'changes' }" @click="showPortfolioChanges">Portfolio changes</button></div>
     </header>
 
     <section v-if="view === 'quartiles' && !selected" class="card category-browser quartile-browser" aria-label="Category quartiles">
@@ -1465,6 +1559,27 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
           <section><h3>Second fund: Top 10 holdings</h3><div class="holdings-list"><div v-for="holding in portfolioOverlap.rightTopHoldings" :key="`right-${holding.isin}-${holding.instrument_name}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.isin }}</small></span><b>{{ (holding.weight * 100).toFixed(2) }}%</b></div></div></section>
         </div>
         <p class="compare-footnote">Only positive, non-derivative positions with an ISIN are used. The disclosures may have different as-of dates; compare the dates above before drawing a conclusion.</p>
+      </template>
+    </section>
+
+    <section v-else-if="view === 'changes' && !selected" class="card portfolio-changes" aria-label="Portfolio change tracker">
+      <div class="compare-intro"><div><p class="eyebrow">Portfolio change tracker</p><h2>See what a fund manager changed</h2><p>Compare the latest two verified monthly disclosures for a single scheme.</p></div><span v-if="portfolioChangeScheme">{{ portfolioChangeSnapshots.length }} snapshots</span></div>
+      <div class="compare-search"><input v-model="portfolioChangeSearch" @keyup.enter="searchPortfolioChanges" placeholder="Search a scheme with portfolio disclosures"><button :disabled="portfolioChangeLoading || portfolioChangeSearch.trim().length < 2" @click="searchPortfolioChanges">{{ portfolioChangeLoading ? 'Loading…' : 'Find scheme' }}</button></div>
+      <p v-if="error" class="message error">{{ error }}</p>
+      <div v-if="portfolioChangeResults.length" class="compare-results"><button v-for="scheme in portfolioChangeResults" :key="scheme.scheme_code" @click="selectPortfolioChangeScheme(scheme)"><span><strong>{{ scheme.name }}</strong><small>{{ scheme.amc }} · {{ scheme.category || 'Category not supplied' }}</small></span><span>View changes</span></button></div>
+      <p v-else-if="!portfolioChangeScheme" class="message">Choose a scheme to inspect how its disclosed portfolio changed month to month.</p>
+      <div v-if="portfolioChangeScheme" class="change-selected"><div><strong>{{ portfolioChangeScheme.scheme.name }}</strong><small>{{ portfolioChangeScheme.portfolio.amc }} monthly portfolio disclosure</small></div><button class="remove-compare" :aria-label="`Clear ${portfolioChangeScheme.scheme.name}`" @click="clearPortfolioChangeScheme">×</button></div>
+      <p v-if="portfolioChangeScheme && !portfolioChangeLoading && portfolioChangeSnapshots.length < 2" class="message">Only one verified disclosure is available so far. The tracker will activate automatically after the next monthly portfolio refresh.</p>
+      <template v-if="portfolioChanges">
+        <div class="change-heading"><div><p class="eyebrow">Disclosure comparison</p><h3>{{ portfolioChanges.currentDate }} versus {{ portfolioChanges.previousDate }}</h3></div><p>Latest disclosure<small>Compared with the prior available month</small></p></div>
+        <div class="portfolio-change-summary"><div><span>New holdings</span><strong>{{ portfolioChanges.newHoldingCount }}</strong><small>Largest additions shown below</small></div><div><span>Exited holdings</span><strong>{{ portfolioChanges.exitedHoldingCount }}</strong><small>Largest exits shown below</small></div><div><span>Top-10 concentration</span><strong :class="{ positive: portfolioChanges.topTenChange < 0, negative: portfolioChanges.topTenChange > 0 }">{{ portfolioChanges.topTenChange >= 0 ? '+' : '' }}{{ (portfolioChanges.topTenChange * 100).toFixed(2) }} pp</strong><small>Change in the largest ten positions</small></div></div>
+        <div class="portfolio-change-grid">
+          <div><h4>Added</h4><div class="holdings-list"><div v-for="holding in portfolioChanges.additions" :key="`add-${holding.isin}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.isin }}</small></span><b>+{{ (holding.weight * 100).toFixed(2) }}%</b></div><p v-if="!portfolioChanges.additions.length" class="holdings-message">No new ISINs.</p></div></div>
+          <div><h4>Exited</h4><div class="holdings-list"><div v-for="holding in portfolioChanges.exits" :key="`exit-${holding.isin}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.isin }}</small></span><b class="negative">−{{ (holding.weight * 100).toFixed(2) }}%</b></div><p v-if="!portfolioChanges.exits.length" class="holdings-message">No exited ISINs.</p></div></div>
+          <div><h4>Largest weight changes</h4><div class="holdings-list"><div v-for="holding in [...portfolioChanges.increases, ...portfolioChanges.reductions].sort((left, right) => Math.abs(right.change) - Math.abs(left.change)).slice(0, 5)" :key="`move-${holding.isin}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.previousWeight ? `${(holding.previousWeight * 100).toFixed(2)}% to ${(holding.weight * 100).toFixed(2)}%` : holding.isin }}</small></span><b :class="{ positive: holding.change > 0, negative: holding.change < 0 }">{{ holding.change >= 0 ? '+' : '' }}{{ (holding.change * 100).toFixed(2) }} pp</b></div><p v-if="!portfolioChanges.increases.length && !portfolioChanges.reductions.length" class="holdings-message">No material weight changes.</p></div></div>
+          <div><h4>Largest sector shifts</h4><div class="holdings-list"><div v-for="sector in portfolioChanges.sectorChanges" :key="sector.name"><span><strong>{{ sector.name }}</strong><small>{{ (sector.previousWeight * 100).toFixed(2) }}% to {{ (sector.currentWeight * 100).toFixed(2) }}%</small></span><b :class="{ positive: sector.change > 0, negative: sector.change < 0 }">{{ sector.change >= 0 ? '+' : '' }}{{ (sector.change * 100).toFixed(2) }} pp</b></div><p v-if="!portfolioChanges.sectorChanges.length" class="holdings-message">No disclosed sector shifts.</p></div></div>
+        </div>
+        <p class="holdings-note">Changes use positive, non-derivative positions with an ISIN. Sector shifts use disclosed sector labels and may be unavailable for debt or non-equity holdings.</p>
       </template>
     </section>
 
