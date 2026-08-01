@@ -244,6 +244,53 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_scheme_ter_mappings_source_key
     ON scheme_ter_mappings(source_scheme_key);
+
+  -- Official NSE source observations for daily equity-price attribution.
+  -- Holding-to-security matching uses the published ISIN, while estimated
+  -- NAV-driver calculations stay in the browser.
+  CREATE TABLE IF NOT EXISTS nse_equity_securities (
+    isin TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    company_name TEXT,
+    series TEXT,
+    source_url TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_nse_equity_securities_symbol
+    ON nse_equity_securities(symbol);
+
+  CREATE TABLE IF NOT EXISTS nse_equity_price_daily (
+    isin TEXT NOT NULL REFERENCES nse_equity_securities(isin),
+    date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    series TEXT,
+    open_price REAL,
+    high_price REAL,
+    low_price REAL,
+    close_price REAL NOT NULL CHECK(close_price > 0),
+    previous_close_price REAL,
+    volume REAL,
+    source_url TEXT NOT NULL,
+    PRIMARY KEY (isin, date)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_nse_equity_price_daily_date
+    ON nse_equity_price_daily(date);
+
+  -- Official NSE daily index close report. Market-sector interpretation is
+  -- calculated in the browser; these are the unchanged source observations.
+  CREATE TABLE IF NOT EXISTS nse_index_close_daily (
+    index_name TEXT NOT NULL,
+    date TEXT NOT NULL,
+    close_value REAL NOT NULL,
+    points_change REAL,
+    percent_change REAL,
+    source_url TEXT NOT NULL,
+    PRIMARY KEY (index_name, date)
+  );
+  CREATE INDEX IF NOT EXISTS idx_nse_index_close_daily_date
+    ON nse_index_close_daily(date);
 `);
 
 // Keep existing portable databases compatible as the source-data model grows.

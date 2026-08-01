@@ -65,6 +65,11 @@ const portfolioChangeResults = ref([]);
 const portfolioChangeScheme = ref(null);
 const portfolioChangeSnapshots = ref([]);
 const portfolioChangeLoading = ref(false);
+const navDriverSearch = ref('');
+const navDriverResults = ref([]);
+const navDriverData = ref(null);
+const navDriverLoading = ref(false);
+const marketSectorPulse = ref(null);
 let searchTimer;
 
 const displaySchemes = computed(() => schemes.value.slice(0, 50));
@@ -369,6 +374,12 @@ function showPortfolioChanges() {
   portfolioChangeResults.value = [];
 }
 
+function showNavDrivers() {
+  closeDetail();
+  view.value = 'drivers';
+  navDriverResults.value = [];
+}
+
 function showSchemes() {
   closeDetail();
   view.value = 'schemes';
@@ -619,6 +630,48 @@ function clearPortfolioChangeScheme() {
   portfolioChangeScheme.value = null;
   portfolioChangeSnapshots.value = [];
 }
+
+async function searchNavDrivers() {
+  if (navDriverSearch.value.trim().length < 2) return;
+  navDriverLoading.value = true; error.value = '';
+  try {
+    const response = await fetch(`/api/schemes?q=${encodeURIComponent(navDriverSearch.value.trim())}&limit=12&plan=growth`);
+    if (!response.ok) throw new Error('Could not search schemes for NAV drivers.');
+    navDriverResults.value = (await response.json()).schemes;
+  } catch (requestError) { error.value = requestError.message; } finally { navDriverLoading.value = false; }
+}
+
+async function selectNavDriverScheme(scheme) {
+  navDriverLoading.value = true; error.value = ''; navDriverData.value = null; marketSectorPulse.value = null;
+  try {
+    const response = await fetch(`/api/schemes/${encodeURIComponent(scheme.scheme_code)}/nav-drivers`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not load NAV-driver source data.');
+    navDriverData.value = payload; navDriverSearch.value = ''; navDriverResults.value = [];
+    const sectorResponse = await fetch(`/api/market-sector-pulse?date=${encodeURIComponent(payload.date)}`);
+    if (sectorResponse.ok) marketSectorPulse.value = await sectorResponse.json();
+  } catch (requestError) { error.value = requestError.message; } finally { navDriverLoading.value = false; }
+}
+
+const navDrivers = computed(() => {
+  const source = navDriverData.value;
+  if (!source) return null;
+  const eligible = source.positions.filter((row) => Number.isFinite(row.weight) && row.weight > 0 && row.weight <= 5);
+  const covered = eligible.filter((row) => Number.isFinite(row.close_price) && Number.isFinite(row.previous_close_price) && row.previous_close_price > 0);
+  const rows = covered.map((row) => ({ ...row, stockReturn: (row.close_price / row.previous_close_price - 1) * 100, contribution: row.weight * (row.close_price / row.previous_close_price - 1) * 100 }));
+  const estimated = rows.reduce((total, row) => total + row.contribution, 0);
+  const actual = (source.nav.nav / source.previous_nav.nav - 1) * 100;
+  return { ...source, actual, estimated, residual: actual - estimated, coverage: covered.reduce((total, row) => total + row.weight, 0) * 100, positive: rows.filter((row) => row.contribution > 0).sort((a, b) => b.contribution - a.contribution).slice(0, 10), negative: rows.filter((row) => row.contribution < 0).sort((a, b) => a.contribution - b.contribution).slice(0, 10) };
+});
+
+const navDriverExplanation = computed(() => {
+  const data = navDrivers.value;
+  if (!data) return null;
+  const direction = data.actual >= 0 ? 'rose' : 'fell';
+  const lead = data.actual >= 0 ? data.positive[0] : data.negative[0];
+  const leadText = lead ? `${lead.instrument_name} was the largest ${data.actual >= 0 ? 'positive' : 'negative'} contributor at ${lead.contribution >= 0 ? '+' : ''}${lead.contribution.toFixed(3)} percentage points.` : 'No individually priced holding was available to explain the move.';
+  return `The fund NAV ${direction} ${Math.abs(data.actual).toFixed(2)}%. Priced disclosed holdings indicate a ${data.estimated >= 0 ? '+' : ''}${data.estimated.toFixed(2)}% movement across ${data.coverage.toFixed(1)}% of the portfolio. ${leadText}`;
+});
 
 function queueSearch() {
   clearTimeout(searchTimer);
@@ -1478,7 +1531,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
     <header>
       <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
-      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button><button :class="{ active: view === 'changes' }" @click="showPortfolioChanges">Portfolio changes</button></div>
+      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button><button :class="{ active: view === 'changes' }" @click="showPortfolioChanges">Portfolio changes</button><button :class="{ active: view === 'drivers' }" @click="showNavDrivers">NAV movement analysis</button></div>
     </header>
 
     <section v-if="view === 'quartiles' && !selected" class="card category-browser quartile-browser" aria-label="Category quartiles">
@@ -1580,6 +1633,34 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
           <div><h4>Largest sector shifts</h4><div class="holdings-list"><div v-for="sector in portfolioChanges.sectorChanges" :key="sector.name"><span><strong>{{ sector.name }}</strong><small>{{ (sector.previousWeight * 100).toFixed(2) }}% to {{ (sector.currentWeight * 100).toFixed(2) }}%</small></span><b :class="{ positive: sector.change > 0, negative: sector.change < 0 }">{{ sector.change >= 0 ? '+' : '' }}{{ (sector.change * 100).toFixed(2) }} pp</b></div><p v-if="!portfolioChanges.sectorChanges.length" class="holdings-message">No disclosed sector shifts.</p></div></div>
         </div>
         <p class="holdings-note">Changes use positive, non-derivative positions with an ISIN. Sector shifts use disclosed sector labels and may be unavailable for debt or non-equity holdings.</p>
+      </template>
+    </section>
+
+    <section v-else-if="view === 'drivers' && !selected" class="card portfolio-changes" aria-label="NAV movement analysis">
+      <div class="compare-intro"><div><p class="eyebrow">NAV movement analysis</p><h2>What likely moved the fund today</h2><p>Uses the latest disclosed portfolio and official NSE closing prices; this is an estimate, not AMC attribution.</p></div><span v-if="navDrivers">{{ navDrivers.date }}</span></div>
+      <div class="compare-search"><input v-model="navDriverSearch" @keyup.enter="searchNavDrivers" placeholder="Search an equity scheme"><button :disabled="navDriverLoading || navDriverSearch.trim().length < 2" @click="searchNavDrivers">{{ navDriverLoading ? 'Loading…' : 'Find scheme' }}</button></div>
+      <p v-if="error" class="message error">{{ error }}</p><div v-if="navDriverResults.length" class="compare-results"><button v-for="scheme in navDriverResults" :key="scheme.scheme_code" @click="selectNavDriverScheme(scheme)"><span><strong>{{ scheme.name }}</strong><small>{{ scheme.amc }} · {{ scheme.category || 'Category not supplied' }}</small></span><span>Analyse</span></button></div>
+      <p v-else-if="!navDrivers" class="message">Choose a scheme with a mapped equity portfolio and NSE price coverage.</p>
+      <template v-if="navDrivers">
+        <div class="change-selected"><div><strong>{{ navDrivers.scheme.name }}</strong><small>Portfolio disclosed {{ navDrivers.portfolio.as_of_date }} · NSE close {{ navDrivers.date }}</small></div><button class="remove-compare" @click="navDriverData = null">×</button></div>
+        <section class="nav-driver-story" aria-label="NAV movement summary">
+          <p class="eyebrow">In plain English</p>
+          <p>{{ navDriverExplanation }}</p>
+          <div><strong>How the estimate works</strong><span>Fund weight × one-day stock return = estimated impact on the fund NAV.</span></div>
+        </section>
+        <div class="portfolio-change-summary"><div><span>Actual NAV move</span><strong :class="{ positive: navDrivers.actual > 0, negative: navDrivers.actual < 0 }">{{ navDrivers.actual >= 0 ? '+' : '' }}{{ navDrivers.actual.toFixed(2) }}%</strong><small>{{ navDrivers.previous_nav.date }} to {{ navDrivers.date }}</small></div><div><span>Estimated holdings move</span><strong :class="{ positive: navDrivers.estimated > 0, negative: navDrivers.estimated < 0 }">{{ navDrivers.estimated >= 0 ? '+' : '' }}{{ navDrivers.estimated.toFixed(2) }}%</strong><small>{{ navDrivers.coverage.toFixed(1) }}% disclosed-weight coverage</small></div><div><span>Residual</span><strong :class="{ positive: navDrivers.residual > 0, negative: navDrivers.residual < 0 }">{{ navDrivers.residual >= 0 ? '+' : '' }}{{ navDrivers.residual.toFixed(2) }}%</strong><small>Actual NAV move minus the holdings estimate</small></div></div>
+        <p class="nav-driver-reconciliation">A small residual means the disclosed priced holdings broadly explain the day. It will not be exactly zero because the fund may hold cash, debt, derivatives or unpriced positions, may trade after the disclosure date, and NAV also reflects daily expenses.</p>
+        <div class="nav-driver-grid">
+          <section><h4>Top positive drivers</h4><div class="nav-driver-table"><div class="nav-driver-head"><span>Holding</span><span>Weight</span><span>Price move</span><span>Stock return</span><span>NAV impact</span></div><div v-for="row in navDrivers.positive" :key="`positive-${row.isin}`" class="nav-driver-row"><span><strong>{{ row.instrument_name }}</strong><small>{{ row.symbol || row.isin }}</small></span><strong>{{ (row.weight * 100).toFixed(2) }}%</strong><strong>₹{{ row.previous_close_price.toFixed(2) }} → ₹{{ row.close_price.toFixed(2) }}</strong><strong class="positive">+{{ row.stockReturn.toFixed(2) }}%</strong><strong class="positive">+{{ row.contribution.toFixed(3) }} pp</strong></div><p v-if="!navDrivers.positive.length" class="holdings-message">No priced positive contributors for this date.</p></div></section>
+          <section><h4>Top negative drivers</h4><div class="nav-driver-table"><div class="nav-driver-head"><span>Holding</span><span>Weight</span><span>Price move</span><span>Stock return</span><span>NAV impact</span></div><div v-for="row in navDrivers.negative" :key="`negative-${row.isin}`" class="nav-driver-row"><span><strong>{{ row.instrument_name }}</strong><small>{{ row.symbol || row.isin }}</small></span><strong>{{ (row.weight * 100).toFixed(2) }}%</strong><strong>₹{{ row.previous_close_price.toFixed(2) }} → ₹{{ row.close_price.toFixed(2) }}</strong><strong class="negative">{{ row.stockReturn.toFixed(2) }}%</strong><strong class="negative">{{ row.contribution.toFixed(3) }} pp</strong></div><p v-if="!navDrivers.negative.length" class="holdings-message">No priced negative contributors for this date.</p></div></section>
+        </div>
+        <p class="holdings-note">This is a daily, holdings-based estimate—not an official AMC attribution. It uses the latest portfolio disclosure available before the NAV date and official NSE closing prices only for mapped equity holdings.</p>
+        <section v-if="marketSectorPulse" class="market-sector-pulse" aria-label="Overall market sector pulse">
+          <div class="change-heading"><div><p class="eyebrow">Market sector pulse</p><h3>How the overall market’s sectors moved</h3></div><p>NSE closing report<small>{{ marketSectorPulse.date }}</small></p></div>
+          <p>These are the daily moves of broad NSE sector indices, independent of this fund. They provide the market backdrop for the holdings analysis above.</p>
+          <div class="market-sector-grid"><article v-for="sector in marketSectorPulse.sectors" :key="sector.index_name" :class="{ positive: sector.percent_change > 0, negative: sector.percent_change < 0 }"><strong>{{ sector.index_name }}</strong><span>{{ sector.percent_change >= 0 ? '+' : '' }}{{ sector.percent_change.toFixed(2) }}%</span><small>{{ sector.points_change >= 0 ? '+' : '' }}{{ sector.points_change.toFixed(2) }} points · close {{ sector.close_value.toLocaleString('en-IN', { maximumFractionDigits: 2 }) }}</small></article></div>
+          <p class="nav-sector-news-note"><strong>News context will be added separately.</strong> It will be labelled as market context, not a proven cause of a sector or fund move.</p>
+        </section>
       </template>
     </section>
 

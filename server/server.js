@@ -377,6 +377,46 @@ app.get('/api/schemes/:schemeCode/holdings/history', (request, response) => {
   });
 });
 
+app.get('/api/schemes/:schemeCode/nav-drivers', (request, response) => {
+  const scheme = db.prepare('SELECT scheme_code, name, amc FROM schemes WHERE scheme_code = ?').get(request.params.schemeCode);
+  if (!scheme) return response.status(404).json({ error: 'Scheme not found.' });
+  const requestedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(request.query.date || '')) ? String(request.query.date) : null;
+  const priceDate = requestedDate || db.prepare(`
+    SELECT MAX(p.date) AS date FROM nse_equity_price_daily p
+    JOIN nav_daily n ON n.scheme_code = ? AND n.date = p.date
+  `).get(scheme.scheme_code).date;
+  if (!priceDate) return response.status(404).json({ error: 'No aligned NSE price and fund NAV date is available yet.' });
+  const navPoints = db.prepare(`SELECT date, nav FROM nav_daily WHERE scheme_code = ? AND date <= ? ORDER BY date DESC LIMIT 2`).all(scheme.scheme_code, priceDate);
+  if (navPoints.length < 2 || navPoints[0].date !== priceDate) return response.status(404).json({ error: 'Fund NAV is unavailable for the selected price date.' });
+  const portfolio = db.prepare(`
+    SELECT p.portfolio_id, p.amc, p.name, MAX(h.as_of_date) AS as_of_date
+    FROM scheme_portfolio_mappings m JOIN holding_portfolios p ON p.portfolio_id = m.portfolio_id
+    JOIN portfolio_holdings h ON h.portfolio_id = p.portfolio_id
+    WHERE m.scheme_code = ? AND h.as_of_date <= ?
+    GROUP BY p.portfolio_id, p.amc, p.name ORDER BY as_of_date DESC LIMIT 1
+  `).get(scheme.scheme_code, priceDate);
+  if (!portfolio) return response.status(404).json({ error: 'No portfolio disclosure preceding this NAV date is available.' });
+  const positions = db.prepare(`
+    SELECT h.instrument_name, h.isin, h.weight, h.asset_class, h.holding_group, h.industry_or_rating,
+      px.symbol, px.close_price, px.previous_close_price
+    FROM portfolio_holdings h LEFT JOIN nse_equity_price_daily px ON px.isin = UPPER(TRIM(h.isin)) AND px.date = ?
+    WHERE h.portfolio_id = ? AND h.as_of_date = ? ORDER BY h.position_order
+  `).all(priceDate, portfolio.portfolio_id, portfolio.as_of_date);
+  response.json({ scheme, date: priceDate, nav: navPoints[0], previous_nav: navPoints[1], portfolio, positions });
+});
+
+app.get('/api/market-sector-pulse', (request, response) => {
+  const requestedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(request.query.date || '')) ? String(request.query.date) : null;
+  const date = requestedDate || db.prepare('SELECT MAX(date) AS date FROM nse_index_close_daily').get().date;
+  if (!date) return response.status(404).json({ error: 'No NSE sector-index report has been imported yet.' });
+  const rows = db.prepare(`
+    SELECT index_name, date, close_value, points_change, percent_change, source_url
+    FROM nse_index_close_daily WHERE date = ? ORDER BY percent_change DESC
+  `).all(date);
+  if (!rows.length) return response.status(404).json({ error: 'No NSE sector-index report is available for this date.' });
+  response.json({ date, sectors: rows });
+});
+
 app.get('/api/schemes/:schemeCode/fund-snapshot', (request, response) => {
   const scheme = db.prepare('SELECT scheme_code, name FROM schemes WHERE scheme_code = ?').get(request.params.schemeCode);
   if (!scheme) return response.status(404).json({ error: 'Scheme not found' });
