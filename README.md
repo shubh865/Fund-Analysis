@@ -1,84 +1,146 @@
 # Mutual Fund Analytics
 
-Self-hosted mutual-fund analytics workspace built from AMFI source data. SQLite retains source observations; performance, peer rankings and portfolio summaries are calculated in the browser so derived metrics are not stored in the database.
+A local-first analytics workspace for Indian mutual funds. It brings together AMFI scheme/NAV data, AMFI AUM and TER disclosures, supported monthly portfolio disclosures, and selected Nifty Total Return Indices (TRIs).
 
-## What the app includes
+The product is designed for analysis rather than a static return screener: source data is retained in SQLite, while returns, quartiles, peer measures, cost reconstruction and portfolio summaries are calculated in the browser.
 
-- Scheme search and filters, scheme detail views, NAV history and point-to-point returns
-- Fund-versus-benchmark comparison when a verified Nifty TRI mapping is available
-- Peer analysis and category quartiles for Direct/Regular Growth plans
-- AMFI AAUM, daily TER and current scheme-level AUM source observations
-- Monthly portfolio disclosures, including top holdings, sector allocation and debt holding summaries where an AMC disclosure has been ingested
+## What it does
 
-## Net return and Gross before TER
+- Search and filter schemes by broad category, subcategory, plan and fund structure.
+- View an individual scheme's NAV history, point-to-point returns and investment growth.
+- Compare a fund with its mapped benchmark only when aligned TRI data and a verified mapping are available.
+- Compare up to five schemes, including NAV, total AUM, 1/3/5-year returns and benchmark alpha.
+- Analyse category peers using rolling-return averages, alpha and benchmark-beating consistency.
+- Rank category peers in quartiles, with Direct and Regular Growth shown side-by-side.
+- Review AMFI AAUM, daily TER, current scheme-level AUM and available monthly portfolio disclosures.
+- Provide top holdings, sector allocation and debt holding/rating summaries where the corresponding AMC disclosure has been ingested and mapped.
 
-Quartiles can be viewed on either basis:
+## Data model and calculation principle
 
-- **Net return** is calculated directly from published NAV. It is the investor return after the plan's TER.
-- **Gross before TER** is an estimate of the return before the plan's operating expenses. For every day in the selected holding period, the app reverses that day's applicable official AMFI TER drag and compounds the resulting factors with NAV performance.
+`data/mutual-funds.db` is a local SQLite database and is deliberately not committed to Git. It stores source observations and mappings, including:
 
-The gross estimate is shown only when the plan has complete, unambiguous TER coverage for the entire selected period. Historical scheme renames are linked only when AMFI's source identity, adjacent disclosure dates and TER boundary values support a continuous identity. Plans without that coverage are excluded from the gross ranking rather than being estimated with missing data.
+- scheme master and daily NAV history
+- benchmark TRI observations and benchmark mappings
+- daily AMFI TER observations, periodic AMFI AAUM and scheme-level AUM
+- raw portfolio disclosures, normalised positions and scheme-to-portfolio mappings
 
-Gross-before-TER is designed for like-for-like cost analysis; it is an analytical reconstruction, not a published fund return.
+The frontend calculates derived measures from these source observations. This means returns, rolling averages, alpha, quartile membership, volatility measures and portfolio aggregates are not stored as permanent database metrics.
+
+## Return conventions
+
+### Net return
+
+Net return is calculated directly from published NAV. It is the return an investor experiences, after the TER charged by the fund plan.
+
+### Gross before TER
+
+The Quartiles view also offers **Gross before TER**. It is an analytical estimate of the return before plan expenses:
+
+1. Start with the published NAV performance for the selected holding period.
+2. Take the applicable official AMFI TER for each day.
+3. Reverse that day's expense drag and compound the daily factors across the period.
+
+This reconstructs a like-for-like pre-expense outcome for comparing fund management performance separately from the cost of the plan. It is not a published fund return.
+
+The app displays a plan in Gross before TER only when its TER history is complete and unambiguous for the selected period. Historic AMFI scheme identities are linked across renames only where the official source identity, adjacent disclosure dates and TER boundary values support continuity. Where coverage is incomplete, the plan is excluded instead of filling gaps with an assumed TER.
+
+### Periods, CAGR and rolling returns
+
+- 1-year return is the return between the selected date and the closest available NAV at the equivalent date one calendar year earlier.
+- 3-year and 5-year returns are annualised (CAGR).
+- Rolling returns repeat that same calendar-year holding-period calculation for every eligible end date; their average is the average of those individual outcomes.
+- Alpha is fund return minus the mapped benchmark return over the same aligned dates. A benchmark is never substituted with another index when the intended mapping/data is unavailable.
+
+## Data sources and scope
+
+| Source | Used for |
+| --- | --- |
+| AMFI NAV feed and historical archive | Scheme master and daily NAV history |
+| AMFI TER disclosures | Daily Direct/Regular TER history |
+| AMFI AUM disclosures | Monthly AAUM and current scheme-level AUM |
+| Nifty index data | Supported benchmark TRI histories |
+| AMC monthly portfolio disclosures | Holdings, sectors and debt portfolio measures for supported AMCs |
+
+Coverage varies by source. Benchmark comparisons require a usable scheme-to-index mapping and TRI history. Portfolio sections appear only when a suitable disclosure has been imported and mapped. BSE and CRISIL benchmark data is not inferred from another index.
 
 ## Run locally
 
+Requirements: a supported Node.js LTS version and npm.
+
 ```powershell
 npm install
-npm run import:daily-nav
 npm run dev
 ```
 
-Open `http://localhost:5173`. The API runs at `http://localhost:3000`.
+Open [http://localhost:5173](http://localhost:5173). The local API runs at [http://localhost:3000](http://localhost:3000), with a health endpoint at [http://localhost:3000/api/health](http://localhost:3000/api/health).
 
-The importer downloads AMFI's `NAVAll.txt`, saves its raw response under `raw/`, filters malformed NAV/ISIN values, and upserts records into `data/mutual-funds.db`. It is safe to rerun:
+For a production-style local API process:
 
 ```powershell
-npm run import:daily-nav
+npm start
 ```
 
-To replay an already saved AMFI response without making a network request:
+## Data refresh and maintenance
+
+The project keeps raw downloads outside Git and uses rerunnable import scripts. The main commands are:
+
+```powershell
+# Daily AMFI NAV import
+npm run import:daily-nav
+
+# Refresh available Nifty TRI data
+npm run refresh:nifty-tri
+
+# Import current AMFI AUM and TER source data, then update their mappings
+npm run import:amfi-total-aum
+npm run map:amfi-total-aum
+npm run import:amfi-aaum
+npm run map:amfi-aaum
+npm run import:amfi-ter
+npm run map:amfi-ter
+
+# Refresh supported AMC monthly portfolio disclosures
+npm run refresh:all-holdings
+
+# Inspect discontinued/stale scheme cleanup candidates (does not delete)
+npm run cleanup:schemes
+```
+
+Historical one-time imports are available when their source archives are present:
+
+```powershell
+npm run import:history
+npm run backfill:amfi-history
+```
+
+The historical NAV importer is resumable. To replay an already-downloaded daily AMFI NAV file without a network request:
 
 ```powershell
 npm run import:daily-nav -- raw/navall_YYYY-MM-DD.txt
 ```
 
-## One-time historical seed
+## Project structure
 
-After downloading and decompressing the `funds.db.zst` release from the historical archive, import it with:
-
-```powershell
-npm run import:history
+```text
+web/       Vue frontend and browser-side calculations
+server/    Express API over local SQLite source data
+scripts/   Source importers, mappers, refreshers and data-quality utilities
+config/    Benchmark and application mapping configuration
+data/      Local SQLite database (ignored by Git)
+raw/       Downloaded source files (ignored by Git)
+docs/      Methodology notes
 ```
 
-The importer is resumable: if interrupted, rerun the same command and it continues from its last committed archive row. It adds raw historical NAVs only; return and risk metrics are never materialized in SQLite.
-
-## Benchmark TRI source data
-
-AMFI tier-1 category defaults are seeded as **provisional** mappings. They are useful for an initial comparison, but they are not substitutes for a scheme's own factsheet/SID benchmark and need later verification.
-
-Nifty's public historical-data page supplies up to one year of Total Return Index observations per request. The importer automatically splits a requested period into compliant yearly windows, keeps each raw response under `raw/benchmarks/nifty/`, and upserts only the source index values:
+## Development checks
 
 ```powershell
-node scripts/import-nifty-tri.js nifty-500 --from 2013-01-01 --to 2026-07-21
+npx vite build --config web/vite.config.js
+node --check scripts/map-amfi-ter.js
 ```
 
-For commands with options, use `node` directly as above. The NPM shortcut is convenient when using its defaults:
+## Important limitations
 
-```powershell
-npm run import:nifty-tri -- nifty-500
-```
-
-To import a screened subset of the provisional Nifty defaults, pass a comma-separated list:
-
-```powershell
-node scripts/import-nifty-defaults.js --only=nifty-dividend-opportunities-50,nifty-large-midcap-250
-```
-
-Derived returns and comparisons remain browser-calculated; SQLite holds NAV/TRI and other source observations only.
-
-## Still to be added
-
-- Import the remaining mapped Nifty indices in measured batches
-- Scheme-specific benchmark overrides and effective dates from AMC documents
-- Frontend fund-versus-benchmark comparison using aligned NAV/TRI dates
+- This is an analytical tool, not investment advice.
+- Data availability and AMC disclosure formats change; every importer should be monitored for source changes.
+- Gross-before-TER, benchmark alpha and portfolio statistics are calculations based on the available source history and should be interpreted alongside the stated coverage/date.
+- A missing benchmark or portfolio disclosure produces no comparison/section rather than a proxy result.
