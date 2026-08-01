@@ -1,6 +1,25 @@
 # Mutual Fund Analytics
 
-First increment of a self-hosted AMFI mutual-fund explorer. It stores only source data in a portable SQLite file. Derived metrics will be calculated in the frontend in later increments.
+Self-hosted mutual-fund analytics workspace built from AMFI source data. SQLite retains source observations; performance, peer rankings and portfolio summaries are calculated in the browser so derived metrics are not stored in the database.
+
+## What the app includes
+
+- Scheme search and filters, scheme detail views, NAV history and point-to-point returns
+- Fund-versus-benchmark comparison when a verified Nifty TRI mapping is available
+- Peer analysis and category quartiles for Direct/Regular Growth plans
+- AMFI AAUM, daily TER and current scheme-level AUM source observations
+- Monthly portfolio disclosures, including top holdings, sector allocation and debt holding summaries where an AMC disclosure has been ingested
+
+## Net return and Gross before TER
+
+Quartiles can be viewed on either basis:
+
+- **Net return** is calculated directly from published NAV. It is the investor return after the plan's TER.
+- **Gross before TER** is an estimate of the return before the plan's operating expenses. For every day in the selected holding period, the app reverses that day's applicable official AMFI TER drag and compounds the resulting factors with NAV performance.
+
+The gross estimate is shown only when the plan has complete, unambiguous TER coverage for the entire selected period. Historical scheme renames are linked only when AMFI's source identity, adjacent disclosure dates and TER boundary values support a continuous identity. Plans without that coverage are excluded from the gross ranking rather than being estimated with missing data.
+
+Gross-before-TER is designed for like-for-like cost analysis; it is an analytical reconstruction, not a published fund return.
 
 ## Run locally
 
@@ -56,7 +75,7 @@ To import a screened subset of the provisional Nifty defaults, pass a comma-sepa
 node scripts/import-nifty-defaults.js --only=nifty-dividend-opportunities-50,nifty-large-midcap-250
 ```
 
-Derived returns and comparisons remain browser-calculated; SQLite holds NAV/TRI source observations only.
+Derived returns and comparisons remain browser-calculated; SQLite holds NAV/TRI and other source observations only.
 
 ## Still to be added
 
