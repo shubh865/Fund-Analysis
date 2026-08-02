@@ -3,8 +3,39 @@ const db = require('./db');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const marketNewsCache = new Map();
 
 app.use(express.json());
+
+function decodeXml(value) {
+  return String(value || '')
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
+}
+
+function xmlField(xml, field) {
+  return decodeXml(new RegExp(`<${field}(?:\\s[^>]*)?>([\\s\\S]*?)</${field}>`, 'i').exec(xml)?.[1]);
+}
+
+async function sectorHeadlines(indexName, date) {
+  const cacheKey = `${indexName}|${date}`;
+  const cached = marketNewsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.articles;
+  const start = new Date(`${date}T00:00:00Z`); start.setUTCDate(start.getUTCDate() - 1);
+  const end = new Date(`${date}T00:00:00Z`); end.setUTCDate(end.getUTCDate() + 1);
+  const search = `${indexName} India stock market after:${start.toISOString().slice(0, 10)} before:${end.toISOString().slice(0, 10)}`;
+  const sourceUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(search)}&hl=en-IN&gl=IN&ceid=IN:en`;
+  const response = await fetch(sourceUrl, { headers: { 'User-Agent': 'Fund-Analysis/0.1 (local)' } });
+  if (!response.ok) throw new Error(`News feed returned HTTP ${response.status}`);
+  const xml = await response.text();
+  const articles = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)].slice(0, 2).map((match) => {
+    const item = match[1];
+    return { title: xmlField(item, 'title'), url: xmlField(item, 'link'), published_at: xmlField(item, 'pubDate'), publisher: xmlField(item, 'source') || 'News source' };
+  }).filter((article) => article.title && article.url);
+  marketNewsCache.set(cacheKey, { expiresAt: Date.now() + (30 * 60 * 1000), articles });
+  return articles;
+}
 
 function growthPlanType(name) {
   const normalized = String(name || '').toLowerCase();
@@ -415,6 +446,19 @@ app.get('/api/market-sector-pulse', (request, response) => {
   `).all(date);
   if (!rows.length) return response.status(404).json({ error: 'No NSE sector-index report is available for this date.' });
   response.json({ date, sectors: rows });
+});
+
+app.get('/api/market-sector-news', async (request, response) => {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(request.query.date || '')) ? String(request.query.date) : db.prepare('SELECT MAX(date) AS date FROM nse_index_close_daily').get().date;
+  if (!date) return response.status(404).json({ error: 'No NSE sector-index report has been imported yet.' });
+  const rows = db.prepare(`SELECT index_name, percent_change FROM nse_index_close_daily WHERE date = ? ORDER BY percent_change DESC`).all(date);
+  if (!rows.length) return response.status(404).json({ error: 'No NSE sector-index report is available for this date.' });
+  const selected = [...rows.slice(0, 3), ...rows.slice(-3).reverse()].filter((row, index, items) => items.findIndex((item) => item.index_name === row.index_name) === index);
+  const sectors = await Promise.all(selected.map(async (sector) => ({
+    ...sector,
+    articles: await sectorHeadlines(sector.index_name, date).catch(() => []),
+  })));
+  response.json({ date, sectors });
 });
 
 app.get('/api/schemes/:schemeCode/fund-snapshot', (request, response) => {

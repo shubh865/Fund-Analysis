@@ -16,6 +16,7 @@
     "import:nse-equity-securities": "node scripts/import-nse-equity-securities.js",
     "import:nse-equity-prices": "node scripts/import-nse-equity-prices.js",
     "import:nse-index-closes": "node scripts/import-nse-index-closes.js",
+    "refresh:nse-market-data": "node scripts/refresh-nse-market-data.js",
     "import:absl-holdings": "node scripts/import-absl-holdings.js",
     "map:absl-portfolios": "node scripts/map-absl-portfolios.js",
     "refresh:absl-holdings": "node scripts/refresh-absl-holdings.js",

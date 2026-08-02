@@ -70,6 +70,7 @@ const navDriverResults = ref([]);
 const navDriverData = ref(null);
 const navDriverLoading = ref(false);
 const marketSectorPulse = ref(null);
+const marketSectorNews = ref(null);
 let searchTimer;
 
 const displaySchemes = computed(() => schemes.value.slice(0, 50));
@@ -642,7 +643,7 @@ async function searchNavDrivers() {
 }
 
 async function selectNavDriverScheme(scheme) {
-  navDriverLoading.value = true; error.value = ''; navDriverData.value = null; marketSectorPulse.value = null;
+  navDriverLoading.value = true; error.value = ''; navDriverData.value = null; marketSectorPulse.value = null; marketSectorNews.value = null;
   try {
     const response = await fetch(`/api/schemes/${encodeURIComponent(scheme.scheme_code)}/nav-drivers`);
     const payload = await response.json();
@@ -650,6 +651,8 @@ async function selectNavDriverScheme(scheme) {
     navDriverData.value = payload; navDriverSearch.value = ''; navDriverResults.value = [];
     const sectorResponse = await fetch(`/api/market-sector-pulse?date=${encodeURIComponent(payload.date)}`);
     if (sectorResponse.ok) marketSectorPulse.value = await sectorResponse.json();
+    const newsResponse = await fetch(`/api/market-sector-news?date=${encodeURIComponent(payload.date)}`);
+    if (newsResponse.ok) marketSectorNews.value = await newsResponse.json();
   } catch (requestError) { error.value = requestError.message; } finally { navDriverLoading.value = false; }
 }
 
@@ -1659,7 +1662,12 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
           <div class="change-heading"><div><p class="eyebrow">Market sector pulse</p><h3>How the overall market’s sectors moved</h3></div><p>NSE closing report<small>{{ marketSectorPulse.date }}</small></p></div>
           <p>These are the daily moves of broad NSE sector indices, independent of this fund. They provide the market backdrop for the holdings analysis above.</p>
           <div class="market-sector-grid"><article v-for="sector in marketSectorPulse.sectors" :key="sector.index_name" :class="{ positive: sector.percent_change > 0, negative: sector.percent_change < 0 }"><strong>{{ sector.index_name }}</strong><span>{{ sector.percent_change >= 0 ? '+' : '' }}{{ sector.percent_change.toFixed(2) }}%</span><small>{{ sector.points_change >= 0 ? '+' : '' }}{{ sector.points_change.toFixed(2) }} points · close {{ sector.close_value.toLocaleString('en-IN', { maximumFractionDigits: 2 }) }}</small></article></div>
-          <p class="nav-sector-news-note"><strong>News context will be added separately.</strong> It will be labelled as market context, not a proven cause of a sector or fund move.</p>
+          <p class="nav-sector-news-note"><strong>Read the market context below.</strong> Headlines are useful context, not a proven cause of a sector or fund move.</p>
+        </section>
+        <section v-if="marketSectorNews" class="market-sector-news" aria-label="Sector news context">
+          <div class="change-heading"><div><p class="eyebrow">Market context</p><h3>What was being discussed around the day’s biggest sector moves</h3></div><p>Headline context<small>{{ marketSectorNews.date }}</small></p></div>
+          <p>These headlines provide context for the strongest and weakest sectors. They do not prove the reason for a sector move or this fund’s NAV change.</p>
+          <div class="market-news-grid"><article v-for="sector in marketSectorNews.sectors" :key="sector.index_name"><header><strong>{{ sector.index_name }}</strong><span :class="{ positive: sector.percent_change > 0, negative: sector.percent_change < 0 }">{{ sector.percent_change >= 0 ? '+' : '' }}{{ sector.percent_change.toFixed(2) }}%</span></header><a v-for="article in sector.articles" :key="article.url" :href="article.url" target="_blank" rel="noreferrer"><strong>{{ article.title }}</strong><small>{{ article.publisher }} · {{ article.published_at }}</small></a><p v-if="!sector.articles.length">No dated sector-specific headline was available from the news feed.</p></article></div>
         </section>
       </template>
     </section>
