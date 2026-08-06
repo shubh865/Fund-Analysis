@@ -85,7 +85,6 @@
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
-    "better-sqlite3": "^12.4.1",
     "express": "^5.1.0",
     "pdfjs-dist": "^6.2.108",
     "playwright-core": "^1.62.1",

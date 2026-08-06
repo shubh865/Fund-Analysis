@@ -1,5 +1,5 @@
 const path = require('node:path');
-const Database = require('better-sqlite3');
+const { SQLiteDatabase } = require('../server/sqlite');
 process.env.SKIP_NAV_DATE_INDEX = '1';
 const target = require('../server/db');
 
@@ -8,7 +8,7 @@ const sourceName = 'captn3m0-historical-mf-data';
 const batchSize = 250_000;
 
 function main() {
-  const source = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  const source = new SQLiteDatabase(sourcePath, { readonly: true, fileMustExist: true });
   const sourceTables = source.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('schemes', 'nav')").all();
   if (sourceTables.length !== 2) throw new Error('The archive does not have the expected schemes and nav tables.');
 

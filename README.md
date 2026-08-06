@@ -67,7 +67,8 @@ Coverage varies by source. Benchmark comparisons require a usable scheme-to-inde
 
 ## Run locally
 
-Requirements: a supported Node.js LTS version and npm.
+Requirements: Node.js 22 or later and npm. The project uses Node's built-in
+SQLite support, so no native SQLite package or C++ build tools are required.
 
 ```powershell
 npm install

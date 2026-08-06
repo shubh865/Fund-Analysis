@@ -1,11 +1,11 @@
-const Database = require('better-sqlite3');
 const fs = require('node:fs');
 const path = require('node:path');
+const { SQLiteDatabase } = require('./sqlite');
 
 const dataDirectory = path.join(__dirname, '..', 'data');
 fs.mkdirSync(dataDirectory, { recursive: true });
 
-const db = new Database(path.join(dataDirectory, 'mutual-funds.db'));
+const db = new SQLiteDatabase(path.join(dataDirectory, 'mutual-funds.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
