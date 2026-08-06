@@ -63,7 +63,11 @@ class SQLiteDatabase {
         this.exec(depth === 0 ? 'COMMIT' : `RELEASE SAVEPOINT ${savepoint}`);
         return result;
       } catch (error) {
-        this.exec(depth === 0 ? 'ROLLBACK' : `ROLLBACK TO SAVEPOINT ${savepoint}`);
+        if (depth === 0) this.exec('ROLLBACK');
+        else {
+          this.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+          this.exec(`RELEASE SAVEPOINT ${savepoint}`);
+        }
         throw error;
       } finally {
         this.transactionDepth -= 1;

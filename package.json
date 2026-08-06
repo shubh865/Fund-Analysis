@@ -81,7 +81,8 @@
     "backfill:amfi-history": "node scripts/backfill-amfi-history.js",
     "map:amfi-ter": "node scripts/map-amfi-ter.js",
     "map:amfi-aaum": "node scripts/map-amfi-aaum.js",
-    "map:amfi-total-aum": "node scripts/map-amfi-total-aum.js"
+    "map:amfi-total-aum": "node scripts/map-amfi-total-aum.js",
+    "verify:sqlite": "node scripts/verify-node-sqlite.js"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
