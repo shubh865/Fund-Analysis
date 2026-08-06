@@ -17,7 +17,31 @@ class SQLiteDatabase {
   prepare(sql) {
     const statement = this.database.prepare(sql);
     statement.setAllowBareNamedParameters(true);
-    return statement;
+    // better-sqlite3 quietly ignores extra fields on a named-parameter object.
+    // Node's built-in driver rejects them. Import rows deliberately carry more
+    // source fields than each individual upsert needs, so retain that former
+    // behaviour at this boundary rather than duplicating/reshaping every row.
+    const namedParameters = new Set(
+      [...String(sql).matchAll(/[$@:][A-Za-z_][A-Za-z0-9_]*/g)].map((match) => match[0].slice(1)),
+    );
+    const filterArguments = (args) => {
+      if (args.length !== 1 || !args[0] || Array.isArray(args[0]) || typeof args[0] !== 'object' || !namedParameters.size) {
+        return args;
+      }
+      const parameters = {};
+      for (const [key, value] of Object.entries(args[0])) {
+        const bareKey = key.replace(/^[$@:]/, '');
+        if (namedParameters.has(bareKey)) parameters[bareKey] = value;
+      }
+      return [parameters];
+    };
+    return {
+      run: (...args) => statement.run(...filterArguments(args)),
+      get: (...args) => statement.get(...filterArguments(args)),
+      all: (...args) => statement.all(...filterArguments(args)),
+      iterate: (...args) => statement.iterate(...filterArguments(args)),
+      columns: () => statement.columns(),
+    };
   }
 
   exec(sql) {
