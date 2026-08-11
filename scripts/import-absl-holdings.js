@@ -6,7 +6,7 @@ const { normalizeHoldings } = require('./lib/portfolio-normalization');
 
 const [inputPath, ...args] = process.argv.slice(2);
 if (!inputPath || inputPath.startsWith('--')) {
-  console.error('Usage: node scripts/import-absl-holdings.js <monthly-disclosure.xlsx> [--source-url URL]');
+  console.error('Usage: node scripts/import-absl-holdings.js <monthly-disclosure.xls|xlsx> [--source-url URL]');
   process.exit(1);
 }
 
@@ -54,6 +54,15 @@ function isGroup(name) {
   return /^\([a-z]\)|^(listed|unlisted|government securities|exchange traded funds|treps|reverse repo|cash and cash equivalents)/i.test(name);
 }
 
+function firstText(row) {
+  return (row || []).map(text).find(Boolean) || '';
+}
+
+function columnIndex(header, matcher, fallback) {
+  const found = header.findIndex((value) => matcher.test(text(value)));
+  return found >= 0 ? found : fallback;
+}
+
 const workbook = XLSX.readFile(resolvedInput, { cellDates: false });
 const portfolioUpsert = db.prepare(`
   INSERT INTO holding_portfolios (amc, source_fund_code, name, description)
@@ -93,20 +102,32 @@ const importWorkbook = db.transaction(() => {
     if (sheetName === 'Index') continue;
     const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: null, raw: true });
     const fundCode = text(rows[0]?.[0]);
-    const name = text(rows[0]?.[1]);
-    const description = text(rows[1]?.[1]);
-    const date = asOfDate(rows[2]?.[1]);
+    // ABSL moved the scheme detail columns one position to the right in its
+    // July 2026 legacy .xls workbook. Find them instead of assuming a layout.
+    const name = text(rows[0]?.slice(1).find((value) => text(value))) || '';
+    const description = firstText(rows[1]);
+    const date = rows.slice(0, 5).flatMap((row) => row || []).map(asOfDate).find(Boolean);
+    const headerIndex = rows.findIndex((row) => (row || []).some((value) => /name of (?:the )?instrument/i.test(text(value))));
     if (!fundCode || !name || !date) continue;
     if (!disclosureDate) disclosureDate = date;
     if (disclosureDate !== date) throw new Error(`Mixed disclosure dates found: ${disclosureDate} and ${date}.`);
 
+    if (headerIndex < 0) continue;
+    const header = rows[headerIndex] || [];
+    const instrumentColumn = columnIndex(header, /name of (?:the )?instrument/i, 1);
+    const isinColumn = columnIndex(header, /^isin$/i, 2);
+    const ratingColumn = columnIndex(header, /industry.*rating|rating/i, 3);
+    const quantityColumn = columnIndex(header, /^quantity$/i, 4);
+    const marketValueColumn = columnIndex(header, /market\s*value/i, 5);
+    const weightColumn = columnIndex(header, /%\s*to\s*aum|%.*aum/i, 6);
+    const yieldColumn = columnIndex(header, /^ytm/i, 7);
+    const yieldToCallColumn = columnIndex(header, /^ytc/i, 8);
+
     const holdings = [];
     let assetClass = null;
     let holdingGroup = null;
-    for (const row of rows.slice(4)) {
-      // Column A is deliberately blank in ABSL's disclosure sheets; holdings
-      // begin in column B, while the fund code itself lives in cell A1.
-      const instrumentName = text(row[1]);
+    for (const row of rows.slice(headerIndex + 1)) {
+      const instrumentName = text(row[instrumentColumn]);
       if (!instrumentName) continue;
       if (isSection(instrumentName)) {
         assetClass = instrumentName;
@@ -119,20 +140,20 @@ const importWorkbook = db.transaction(() => {
       }
       if (isSubtotal(instrumentName)) continue;
 
-      const quantity = number(row[4]);
-      const marketValueLakh = number(row[5]);
-      const weight = number(row[6]);
+      const quantity = number(row[quantityColumn]);
+      const marketValueLakh = number(row[marketValueColumn]);
+      const weight = number(row[weightColumn]);
       if (quantity == null && marketValueLakh == null && weight == null) continue;
 
       holdings.push({
         instrumentName,
-        isin: text(row[2]) || null,
-        industryOrRating: text(row[3]) || null,
+        isin: text(row[isinColumn]) || null,
+        industryOrRating: text(row[ratingColumn]) || null,
         quantity,
         marketValueLakh,
         weight,
-        yield: number(row[7]),
-        yieldToCall: number(row[8]),
+        yield: number(row[yieldColumn]),
+        yieldToCall: number(row[yieldToCallColumn]),
         assetClass,
         holdingGroup,
       });

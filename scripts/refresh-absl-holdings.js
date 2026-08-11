@@ -43,8 +43,10 @@ async function main() {
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'absl-portfolios-'));
   try {
     const zip = new AdmZip(Buffer.from(await archiveResponse.arrayBuffer()));
-    const workbookEntry = zip.getEntries().find((entry) => !entry.isDirectory && /\.xlsx$/i.test(entry.entryName));
-    if (!workbookEntry) throw new Error('ABSL portfolio ZIP contained no Excel workbook.');
+    // ABSL alternates between legacy .xls and modern .xlsx workbooks.
+    // The `xlsx` reader used by the importer supports both formats.
+    const workbookEntry = zip.getEntries().find((entry) => !entry.isDirectory && /\.xlsx?$/i.test(entry.entryName));
+    if (!workbookEntry) throw new Error('ABSL portfolio ZIP contained no Excel workbook (.xls or .xlsx).');
     const workbookPath = path.join(temporaryDirectory, path.basename(workbookEntry.entryName));
     fs.writeFileSync(workbookPath, workbookEntry.getData());
     runScript('import-absl-holdings.js', [workbookPath, '--source-url', SOURCE_PAGE]);
