@@ -1,13 +1,18 @@
 const db = require('../server/db');
 const AMC = 'Nippon India Mutual Fund';
-const ROOT = 'https://mf.nipponindiaim.com/InvestorServices/FactsheetsDocuments/Fundamentals-July-2026/';
+const DISCLOSURES_URL = 'https://mf.nipponindiaim.com/investor-service/downloads/factsheet-portfolio-and-other-disclosures';
 const clean = (x) => String(x || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#8377;/g, ' ').replace(/\s+/g, ' ').trim();
 const norm = (x) => clean(x).toUpperCase().replace(/NIPPON INDIA/g,'').replace(/\b(DIRECT|REGULAR|PLAN|OPTION|GROWTH|IDCW|DIVIDEND|PAYOUT|REINVESTMENT)\b/g,'').replace(/[^A-Z0-9]+/g,' ').trim();
 const n = (x) => { const m = clean(x).match(/\d+(?:\.\d+)?/); return m ? Number(m[0]) : null; };
 const years = (x) => /days?/i.test(x) ? n(x) / 365.2425 : n(x);
 function matchValue(html, label) { return html.match(new RegExp(`${label}[\\s\\S]{0,500}?<td[^>]*>\\s*([^<]+)`, 'i'))?.[1]; }
 async function main() {
-  console.log('Fetching Nippon India July digital factsheet...');
+  console.log('Discovering the latest Nippon India digital factsheet...');
+  const disclosures = await (await fetch(DISCLOSURES_URL)).text();
+  const relativeRoot = disclosures.match(/href="([^"?#]*Fundamentals-[^"?#/]+\/index\.html)"/i)?.[1];
+  if (!relativeRoot) throw new Error('Could not find the latest E-Factsheet link on Nippon India’s official disclosures page.');
+  const ROOT = new URL(relativeRoot, DISCLOSURES_URL).href.replace(/index\.html$/i, '');
+  console.log(`Using ${ROOT}`);
   const index = await (await fetch(`${ROOT}index.html`)).text();
   const links = [...new Set([...index.matchAll(/href="(Innerpage\/[^"?]+\.html)"/gi)].map((m) => m[1]))];
   const families = new Map();
@@ -20,7 +25,7 @@ async function main() {
   for (const link of links) {
     const url=ROOT+link, html=await (await fetch(url)).text();
     const title=clean(html.match(/<title>([^<]+)/i)?.[1]); const family=[...families.entries()].find(([k])=>norm(title).includes(k)); if(!family) continue;
-    const date=clean(html.match(/NAV as on\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i)?.[1]); const parsed=new Date(`${date} UTC`); if(Number.isNaN(parsed)) continue;
+    const date=clean(html.match(/NAV as on\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})/i)?.[1]); const parsed=new Date(`${date} UTC`); if(Number.isNaN(parsed.getTime())) continue;
     const asOf=parsed.toISOString().slice(0,10); const exit=clean(html.match(/Exit Load:[\s\S]{0,1800}(?=<\/table>)/i)?.[0]);
     const managers=[...html.matchAll(/<div[^>]*>Fund Manager\(s\)<\/div>[\s\S]{0,1000}?<p>([\s\S]*?)<\/p>/gi)].flatMap((m)=>clean(m[1]).split(/Total Experience[^\d]*(?:more than )?\d+ years?/i)[0].split(/\s{2,}|\(Managing Since/).map(clean).filter((v)=>/^[A-Z][A-Za-z. ]+$/.test(v)));
     const avg=matchValue(html,'Average Maturity'), mod=matchValue(html,'Modified Duration'), ytm=matchValue(html,'(?:Annualized portfolio )?YTM'), mac=matchValue(html,'Macaulay Duration');

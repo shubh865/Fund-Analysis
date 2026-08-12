@@ -27,6 +27,7 @@
     "refresh:axis-factsheets": "node scripts/refresh-axis-factsheets.js",
     "refresh:ppfas-factsheets": "node scripts/refresh-ppfas-factsheets.js",
     "refresh:nippon-factsheets": "node scripts/refresh-nippon-factsheets.js",
+    "refresh:uti-factsheets": "node scripts/refresh-uti-factsheets.js",
     "refresh:all-factsheets": "node scripts/refresh-all-factsheets.js",
     "import:icici-holdings": "node scripts/import-icici-holdings.js",
     "map:icici-portfolios": "node scripts/map-icici-portfolios.js",
