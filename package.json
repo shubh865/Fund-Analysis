@@ -9,6 +9,8 @@
     "start": "node server/server.js",
     "import:daily-nav": "node scripts/import-daily-nav.js",
     "import:history": "node scripts/import-historical-archive.js",
+    "normalize:debt-nav-scales": "node scripts/normalize-debt-nav-scales.js",
+    "normalize:debt-nav-scales:apply": "node scripts/normalize-debt-nav-scales.js --apply",
     "seed:benchmark-defaults": "node scripts/seed-benchmark-defaults.js",
     "import:nifty-tri": "node scripts/import-nifty-tri.js",
     "refresh:nifty-tri": "node scripts/refresh-nifty-tri.js",

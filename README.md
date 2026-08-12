@@ -140,8 +140,13 @@ Historical one-time imports are available when their source archives are present
 
 ```powershell
 npm run import:history
+npm run normalize:debt-nav-scales:apply
 npm run backfill:amfi-history
 ```
+
+`normalize:debt-nav-scales:apply` is safe to run repeatedly. It repairs only
+repeated, near-exact 10× or 100× historical NAV presentation-scale changes
+within a single AMC on a single date; it does not alter one-off market moves.
 
 The historical NAV importer is resumable. To replay an already-downloaded daily AMFI NAV file without a network request:
 

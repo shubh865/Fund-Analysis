@@ -1447,9 +1447,16 @@ const aaumChange = computed(() => {
   if (!Number.isFinite(latest) || !Number.isFinite(previous) || previous <= 0) return null;
   return ((latest / previous) - 1) * 100;
 });
+function publishedTer(value) {
+  // In AMFI's source, zero is used where that plan's TER is not published.
+  // A displayed 0.00% would imply a free plan, so surface only positive,
+  // plausible annual TER observations.
+  return Number.isFinite(value) && value > 0 && value < 10 ? value : null;
+}
+
 const selectedTerHistory = computed(() => (fundSnapshot.value.ter || [])
-  .map((point) => ({ ...point, value: point.plan_type === 'direct' ? point.direct_ter : point.regular_ter }))
-  .filter((point) => Number.isFinite(point.value)));
+  .map((point) => ({ ...point, value: publishedTer(point.plan_type === 'direct' ? point.direct_ter : point.regular_ter) }))
+  .filter((point) => point.value !== null));
 const latestTer = computed(() => selectedTerHistory.value.at(-1) || null);
 const snapshotPlanLabel = computed(() => selectedTerHistory.value[0]?.plan_type === 'direct' ? 'Direct' : 'Regular');
 const latestFactsheet = computed(() => fundSnapshot.value.factsheet || null);
@@ -1463,8 +1470,8 @@ const debtSnapshot = computed(() => {
     totalAum: selected.value.total_aum_crore,
     totalAumDate: selected.value.total_aum_date,
     riskometer: selected.value.riskometer_scheme,
-    directTer: latestTer.value?.direct_ter ?? null,
-    regularTer: latestTer.value?.regular_ter ?? null,
+    directTer: publishedTer(latestTer.value?.direct_ter),
+    regularTer: publishedTer(latestTer.value?.regular_ter),
     quartile: debtQuartile.value,
   };
 });

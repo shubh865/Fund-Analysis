@@ -68,6 +68,11 @@ function main() {
   target.exec('DETACH DATABASE archive');
   finishProgress.run(sourceName, lastRowId);
   target.exec('CREATE INDEX IF NOT EXISTS idx_nav_daily_date ON nav_daily(date)');
+  // Historical AMFI archives occasionally switch an entire debt-fund family
+  // from one NAV presentation scale to another. Repair only repeated AMC/date
+  // conversions so stored growth NAV remains continuous after a fresh import.
+  const normaliseScales = require('./normalize-debt-nav-scales');
+  if (typeof normaliseScales === 'function') normaliseScales({ apply: true });
   console.log(`Historical import complete. Processed ${imported.toLocaleString()} archive NAV rows this run.`);
 }
 
