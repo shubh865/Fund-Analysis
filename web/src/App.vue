@@ -45,6 +45,7 @@ const compareSearch = ref('');
 const compareResults = ref([]);
 const compareSelection = ref([]);
 const compareLoading = ref(false);
+const compareChartRange = ref('1Y');
 const peerMainCategory = ref('');
 const peerCategory = ref('');
 const peerPeriod = ref(1);
@@ -783,6 +784,51 @@ const compareRows = computed(() => compareSelection.value.map((item) => {
     benchmarkOutperformance,
   };
 }));
+
+const compareChart = computed(() => {
+  if (compareSelection.value.length < 2) return null;
+  const endDate = compareSelection.value.map((item) => item.history.at(-1)?.date).filter(Boolean).sort()[0];
+  if (!endDate) return null;
+  const months = ranges[compareChartRange.value];
+  const desiredStart = months ? subtractPeriod(endDate, months) : null;
+  const histories = compareSelection.value.map((item) => new Map(item.history
+    .filter((point) => point.date <= endDate && (!desiredStart || point.date >= desiredStart))
+    .map((point) => [point.date, point.nav])));
+  const commonDates = [...histories[0].keys()]
+    .filter((date) => histories.every((historyByDate) => Number.isFinite(historyByDate.get(date))))
+    .sort();
+  if (commonDates.length < 2) return null;
+  const limit = 420;
+  const step = Math.ceil(commonDates.length / limit);
+  const dates = commonDates.filter((_, index) => index % step === 0 || index === commonDates.length - 1);
+  const palette = ['#4f826c', '#a67b46', '#5d72a2', '#a35d72', '#6f8050'];
+  const series = compareSelection.value.map((item, index) => {
+    const firstNav = histories[index].get(commonDates[0]);
+    return {
+      schemeCode: item.scheme.scheme_code,
+      name: item.scheme.name,
+      color: palette[index],
+      values: dates.map((date) => (histories[index].get(date) / firstNav) * 100),
+    };
+  });
+  const values = series.flatMap((item) => item.values);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || Math.max(max * 0.02, 1);
+  const width = 720;
+  const height = 250;
+  const padding = { top: 18, right: 14, bottom: 30, left: 58 };
+  const x = (index) => padding.left + (index / (dates.length - 1)) * (width - padding.left - padding.right);
+  const y = (value) => padding.top + ((max - value) / span) * (height - padding.top - padding.bottom);
+  return {
+    width, height, padding, min, max, startDate: commonDates[0], endDate: commonDates.at(-1),
+    series: series.map((item) => ({
+      ...item,
+      polyline: item.values.map((value, index) => `${x(index).toFixed(1)},${y(value).toFixed(1)}`).join(' '),
+      endY: y(item.values.at(-1)),
+    })),
+  };
+});
 
 const benchmarkComparison = computed(() => {
   if (isDistributionScheme.value || !selected.value?.benchmark_name || !benchmarkHistory.value.length || !history.value.length) return null;
@@ -1590,6 +1636,10 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <p v-if="error" class="message error">{{ error }}</p>
       <div v-if="compareResults.length" class="compare-results"><button v-for="scheme in compareResults" :key="scheme.scheme_code" :disabled="compareSelection.some((item) => item.scheme.scheme_code === scheme.scheme_code) || compareSelection.length >= 5" @click="addToComparison(scheme)"><span><strong>{{ scheme.name }}</strong><small>{{ scheme.amc }} · {{ scheme.category || 'Category not supplied' }}</small></span><span>+ Add</span></button></div>
       <p v-else-if="!compareSelection.length" class="message">Search for the first scheme you would like to compare.</p>
+      <section v-if="compareChart" class="chart-section compare-chart-section" aria-label="Selected-fund NAV growth chart">
+        <div class="chart-header"><div><p class="eyebrow">NAV comparison</p><h3>Selected funds growth</h3><p class="chart-caption">All selected funds rebased to 100 on {{ compareChart.startDate }}</p></div><div><div class="range-controls"><button v-for="range in Object.keys(ranges)" :key="range" :class="{ active: compareChartRange === range }" @click="compareChartRange = range">{{ range }}</button></div><div class="chart-legend compare-chart-legend"><span v-for="series in compareChart.series" :key="series.schemeCode"><i :style="{ background: series.color }"></i>{{ series.name }}</span></div></div></div>
+        <div class="chart-wrap"><svg class="nav-chart" :viewBox="`0 0 ${compareChart.width} ${compareChart.height}`" role="img" :aria-label="`Selected fund growth from ${compareChart.startDate} to ${compareChart.endDate}`"><line v-for="fraction in [0, 0.5, 1]" :key="fraction" class="grid-line" :x1="compareChart.padding.left" :x2="compareChart.width - compareChart.padding.right" :y1="compareChart.padding.top + fraction * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" :y2="compareChart.padding.top + fraction * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" /><text class="axis-label" :x="compareChart.padding.left - 8" :y="compareChart.padding.top + 4" text-anchor="end">{{ compareChart.max.toFixed(1) }}</text><text class="axis-label" :x="compareChart.padding.left - 8" :y="compareChart.height - compareChart.padding.bottom + 4" text-anchor="end">{{ compareChart.min.toFixed(1) }}</text><polyline v-for="series in compareChart.series" :key="series.schemeCode" class="compare-series-line" :style="{ stroke: series.color }" :points="series.polyline" fill="none" /><circle v-for="series in compareChart.series" :key="`${series.schemeCode}-end`" class="compare-series-endpoint" :style="{ fill: series.color }" :cx="compareChart.width - compareChart.padding.right" :cy="series.endY" r="3.5" /><text class="axis-label" :x="compareChart.padding.left" :y="compareChart.height - 7">{{ compareChart.startDate }}</text><text class="axis-label" :x="compareChart.width - compareChart.padding.right" :y="compareChart.height - 7" text-anchor="end">{{ compareChart.endDate }}</text></svg></div>
+      </section>
       <div v-if="compareRows.length" class="compare-matrix-wrap"><div class="compare-matrix"><div class="compare-matrix-head"><span>Scheme</span><span>NAV</span><span>Total AUM</span><span>1Y</span><span>3Y CAGR</span><span>5Y CAGR</span><span>1Y alpha</span><span>3Y alpha</span><span>5Y alpha</span><span></span></div><div v-for="row in compareRows" :key="row.scheme.scheme_code" class="compare-matrix-row"><span class="compare-scheme"><strong>{{ row.scheme.name }}</strong><small>{{ row.scheme.amc }} · {{ row.scheme.category || 'Category not supplied' }}</small></span><strong data-label="NAV">{{ formatNav(row.latestNav) }}</strong><strong data-label="Total AUM">{{ row.scheme.total_aum_crore === null || row.scheme.total_aum_crore === undefined ? '—' : `₹${row.scheme.total_aum_crore.toLocaleString('en-IN', { maximumFractionDigits: 0 })} Cr` }}</strong><strong data-label="1Y" :class="{ positive: row.returns.oneYear > 0, negative: row.returns.oneYear < 0 }">{{ row.returns.oneYear === null ? '—' : `${row.returns.oneYear >= 0 ? '+' : ''}${row.returns.oneYear.toFixed(2)}%` }}</strong><strong data-label="3Y CAGR" :class="{ positive: row.returns.threeYear > 0, negative: row.returns.threeYear < 0 }">{{ row.returns.threeYear === null ? '—' : `${row.returns.threeYear >= 0 ? '+' : ''}${row.returns.threeYear.toFixed(2)}%` }}</strong><strong data-label="5Y CAGR" :class="{ positive: row.returns.fiveYear > 0, negative: row.returns.fiveYear < 0 }">{{ row.returns.fiveYear === null ? '—' : `${row.returns.fiveYear >= 0 ? '+' : ''}${row.returns.fiveYear.toFixed(2)}%` }}</strong><strong data-label="1Y alpha" :class="{ positive: row.benchmarkOutperformance.oneYear > 0, negative: row.benchmarkOutperformance.oneYear < 0 }">{{ row.benchmarkOutperformance.oneYear === null ? '—' : `${row.benchmarkOutperformance.oneYear >= 0 ? '+' : ''}${row.benchmarkOutperformance.oneYear.toFixed(2)}%` }}</strong><strong data-label="3Y alpha" :class="{ positive: row.benchmarkOutperformance.threeYear > 0, negative: row.benchmarkOutperformance.threeYear < 0 }">{{ row.benchmarkOutperformance.threeYear === null ? '—' : `${row.benchmarkOutperformance.threeYear >= 0 ? '+' : ''}${row.benchmarkOutperformance.threeYear.toFixed(2)}%` }}</strong><strong data-label="5Y alpha" :class="{ positive: row.benchmarkOutperformance.fiveYear > 0, negative: row.benchmarkOutperformance.fiveYear < 0 }">{{ row.benchmarkOutperformance.fiveYear === null ? '—' : `${row.benchmarkOutperformance.fiveYear >= 0 ? '+' : ''}${row.benchmarkOutperformance.fiveYear.toFixed(2)}%` }}</strong><button class="remove-compare" aria-label="Remove scheme" @click="removeFromComparison(row.scheme.scheme_code)">×</button></div></div></div>
       <p v-if="compareRows.length" class="compare-footnote">Alpha is fund return minus its mapped benchmark return.</p>
     </section>
