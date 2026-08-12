@@ -11,10 +11,21 @@ async function main() {
   const disclosures = await (await fetch(DISCLOSURES_URL)).text();
   const relativeRoot = disclosures.match(/href="([^"?#]*Fundamentals-[^"?#/]+\/index\.html)"/i)?.[1];
   if (!relativeRoot) throw new Error('Could not find the latest E-Factsheet link on Nippon India’s official disclosures page.');
-  const ROOT = new URL(relativeRoot, DISCLOSURES_URL).href.replace(/index\.html$/i, '');
+  let ROOT = new URL(relativeRoot, DISCLOSURES_URL).href.replace(/index\.html$/i, '');
   console.log(`Using ${ROOT}`);
-  const index = await (await fetch(`${ROOT}index.html`)).text();
-  const links = [...new Set([...index.matchAll(/href="(Innerpage\/[^"?]+\.html)"/gi)].map((m) => m[1]))];
+  let index = await (await fetch(`${ROOT}index.html`)).text();
+  let links = [...new Set([...index.matchAll(/href="(Innerpage\/[^"?]+\.html)"/gi)].map((m) => m[1]))];
+  if (!links.length) {
+    const alternatives = [...new Set([...disclosures.matchAll(/href="([^"?#]*Fundamentals-[^"?#/]+\/index\.html)"/gi)].map((m) => m[1]))];
+    for (const alternative of alternatives) {
+      const candidateRoot = new URL(alternative, DISCLOSURES_URL).href.replace(/index\.html$/i, '');
+      if (candidateRoot === ROOT) continue;
+      const candidateIndex = await (await fetch(`${candidateRoot}index.html`)).text();
+      const candidateLinks = [...new Set([...candidateIndex.matchAll(/href="(Innerpage\/[^"?]+\.html)"/gi)].map((m) => m[1]))];
+      if (candidateLinks.length) { ROOT = candidateRoot; index = candidateIndex; links = candidateLinks; console.log(`Falling back to latest complete directory: ${ROOT}`); break; }
+    }
+  }
+  if (!links.length) throw new Error('Nippon India has not published a complete usable digital factsheet directory.');
   const families = new Map();
   for (const s of db.prepare('SELECT scheme_code,name FROM schemes WHERE amc=?').all(AMC)) { const key=norm(s.name); if(key.length>5) families.set(key,[...(families.get(key)||[]),s.scheme_code]); }
   const snapshot=db.prepare(`INSERT INTO scheme_factsheet_snapshots (scheme_code,as_of_date,source_amc,exit_load_text,source_url,source_file) VALUES (?,?,?,?,?,?) ON CONFLICT(scheme_code,as_of_date) DO UPDATE SET exit_load_text=excluded.exit_load_text,source_url=excluded.source_url,source_file=excluded.source_file`);
