@@ -16,6 +16,7 @@ The product is designed for analysis rather than a static return screener: sourc
 - Rank category peers in quartiles, with Direct and Regular Growth shown side-by-side.
 - Review AMFI AAUM, daily TER, current scheme-level AUM and available monthly portfolio disclosures.
 - Provide top holdings, sector allocation and debt holding/rating summaries where the corresponding AMC disclosure has been ingested and mapped.
+- Show official exit-load terms, fund-manager details and available debt quants from dated AMC factsheets (currently ABSL, HDFC, SBI, Kotak, Axis and PPFAS coverage).
 
 ## Data model and calculation principle
 
@@ -25,6 +26,7 @@ The product is designed for analysis rather than a static return screener: sourc
 - benchmark TRI observations and benchmark mappings
 - daily AMFI TER observations, periodic AMFI AAUM and scheme-level AUM
 - raw portfolio disclosures, normalised positions and scheme-to-portfolio mappings
+- dated AMC factsheet observations for exit load, fund managers and debt quants
 
 The frontend calculates derived measures from these source observations. This means returns, rolling averages, alpha, quartile membership, volatility measures and portfolio aggregates are not stored as permanent database metrics.
 
@@ -62,6 +64,7 @@ The app displays a plan in Gross before TER only when its TER history is complet
 | AMFI AUM disclosures | Monthly AAUM and current scheme-level AUM |
 | Nifty index data | Supported benchmark TRI histories |
 | AMC monthly portfolio disclosures | Holdings, sectors and debt portfolio measures for supported AMCs |
+| AMC factsheets | Exit load, fund-manager details and reported debt quants where an AMC importer is available |
 
 Coverage varies by source. Benchmark comparisons require a usable scheme-to-index mapping and TRI history. Portfolio sections appear only when a suitable disclosure has been imported and mapped. BSE and CRISIL benchmark data is not inferred from another index.
 
@@ -104,6 +107,18 @@ npm run map:amfi-ter
 
 # Refresh supported AMC monthly portfolio disclosures
 npm run refresh:all-holdings
+
+# Refresh latest AMC factsheets (exit load, managers and debt quants)
+npm run refresh:absl-factsheets
+npm run refresh:hdfc-factsheets
+npm run refresh:sbi-factsheets
+npm run refresh:kotak-factsheets
+npm run refresh:axis-factsheets
+npm run refresh:ppfas-factsheets
+npm run refresh:nippon-factsheets
+
+# Refresh every validated official AMC factsheet source
+npm run refresh:all-factsheets
 
 # Inspect discontinued/stale scheme cleanup candidates (does not delete)
 npm run cleanup:schemes

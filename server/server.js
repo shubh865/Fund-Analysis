@@ -481,7 +481,32 @@ app.get('/api/schemes/:schemeCode/fund-snapshot', (request, response) => {
     WHERE m.scheme_code = ?
     ORDER BY t.date ASC
   `).all(scheme.scheme_code);
-  response.json({ aaum, ter });
+  const factsheet = db.prepare(`
+    SELECT as_of_date, source_amc, exit_load_text, source_url
+    FROM scheme_factsheet_snapshots
+    WHERE scheme_code = ?
+    ORDER BY as_of_date DESC
+    LIMIT 1
+  `).get(scheme.scheme_code);
+  const managers = factsheet ? db.prepare(`
+    SELECT manager_name, managing_since, experience_years
+    FROM scheme_factsheet_managers
+    WHERE scheme_code = ? AND as_of_date = ?
+    ORDER BY manager_name COLLATE NOCASE
+  `).all(scheme.scheme_code, factsheet.as_of_date) : [];
+  const debtQuants = factsheet ? db.prepare(`
+    SELECT modified_duration_years, average_maturity_years, residual_maturity_years,
+      yield_to_maturity_percent, macaulay_duration_years,
+      standard_deviation_percent
+    FROM scheme_debt_quant_snapshots
+    WHERE scheme_code = ? AND as_of_date = ?
+  `).get(scheme.scheme_code, factsheet.as_of_date) : null;
+
+  response.json({
+    aaum,
+    ter,
+    factsheet: factsheet ? { ...factsheet, managers, debt_quants: debtQuants } : null,
+  });
 });
 
 app.get('/api/categories', (_request, response) => {

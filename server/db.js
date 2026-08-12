@@ -245,6 +245,41 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_scheme_ter_mappings_source_key
     ON scheme_ter_mappings(source_scheme_key);
 
+  -- Official AMC factsheet observations. Exit-load wording, manager tenure and
+  -- debt quants are reported values, so retain them with the factsheet date.
+  CREATE TABLE IF NOT EXISTS scheme_factsheet_snapshots (
+    scheme_code TEXT NOT NULL REFERENCES schemes(scheme_code),
+    as_of_date TEXT NOT NULL,
+    source_amc TEXT NOT NULL,
+    exit_load_text TEXT,
+    source_url TEXT NOT NULL,
+    source_file TEXT,
+    PRIMARY KEY (scheme_code, as_of_date)
+  );
+
+  CREATE TABLE IF NOT EXISTS scheme_factsheet_managers (
+    scheme_code TEXT NOT NULL REFERENCES schemes(scheme_code),
+    as_of_date TEXT NOT NULL,
+    manager_name TEXT NOT NULL,
+    managing_since TEXT,
+    experience_years REAL,
+    source_url TEXT NOT NULL,
+    PRIMARY KEY (scheme_code, as_of_date, manager_name)
+  );
+
+  CREATE TABLE IF NOT EXISTS scheme_debt_quant_snapshots (
+    scheme_code TEXT NOT NULL REFERENCES schemes(scheme_code),
+    as_of_date TEXT NOT NULL,
+    modified_duration_years REAL,
+    average_maturity_years REAL,
+    residual_maturity_years REAL,
+    yield_to_maturity_percent REAL,
+    macaulay_duration_years REAL,
+    standard_deviation_percent REAL,
+    source_url TEXT NOT NULL,
+    PRIMARY KEY (scheme_code, as_of_date)
+  );
+
   -- Official NSE source observations for daily equity-price attribution.
   -- Holding-to-security matching uses the published ISIN, while estimated
   -- NAV-driver calculations stay in the browser.
@@ -292,6 +327,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_nse_index_close_daily_date
     ON nse_index_close_daily(date);
 `);
+
+const debtQuantColumns = db.prepare('PRAGMA table_info(scheme_debt_quant_snapshots)').all().map((column) => column.name);
+if (!debtQuantColumns.includes('residual_maturity_years')) db.exec('ALTER TABLE scheme_debt_quant_snapshots ADD COLUMN residual_maturity_years REAL');
 
 // Keep existing portable databases compatible as the source-data model grows.
 const schemeColumns = db.prepare('PRAGMA table_info(schemes)').all().map((column) => column.name);

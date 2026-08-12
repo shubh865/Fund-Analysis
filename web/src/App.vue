@@ -20,7 +20,7 @@ const planPairHistory = ref([]);
 const holdings = ref([]);
 const holdingPortfolio = ref(null);
 const holdingsLoading = ref(false);
-const fundSnapshot = ref({ aaum: [], ter: [] });
+const fundSnapshot = ref({ aaum: [], ter: [], factsheet: null });
 const fundSnapshotLoading = ref(false);
 const debtQuartile = ref(null);
 const debtQuartileLoading = ref(false);
@@ -1327,6 +1327,9 @@ const selectedTerHistory = computed(() => (fundSnapshot.value.ter || [])
   .filter((point) => Number.isFinite(point.value)));
 const latestTer = computed(() => selectedTerHistory.value.at(-1) || null);
 const snapshotPlanLabel = computed(() => selectedTerHistory.value[0]?.plan_type === 'direct' ? 'Direct' : 'Regular');
+const latestFactsheet = computed(() => fundSnapshot.value.factsheet || null);
+const factsheetManagers = computed(() => latestFactsheet.value?.managers || []);
+const officialDebtQuants = computed(() => latestFactsheet.value?.debt_quants || null);
 const isDebtScheme = computed(() => /^debt scheme\b/i.test(selected.value?.category || ''));
 const isDistributionScheme = computed(() => /\b(idcw|dividend|payout|reinvestment|bonus)\b|income distribution/i.test(selected.value?.name || ''));
 const debtSnapshot = computed(() => {
@@ -1366,6 +1369,10 @@ function formatTotalAum(crore) {
   if (crore >= 100000) return `₹${(crore / 100000).toFixed(2)}L Cr`;
   if (crore >= 1000) return `₹${(crore / 1000).toFixed(1)}K Cr`;
   return `₹${crore.toLocaleString('en-IN', { maximumFractionDigits: 0 })} Cr`;
+}
+
+function formatFactsheetMetric(value, suffix = '') {
+  return Number.isFinite(value) ? `${value.toFixed(2)}${suffix}` : '—';
 }
 
 function buildRollingReturns(years) {
@@ -1453,7 +1460,7 @@ async function openScheme(schemeCode) {
   holdings.value = [];
   holdingPortfolio.value = null;
   holdingsLoading.value = true;
-  fundSnapshot.value = { aaum: [], ter: [] };
+  fundSnapshot.value = { aaum: [], ter: [], factsheet: null };
   fundSnapshotLoading.value = true;
   debtQuartile.value = null;
   debtQuartileLoading.value = false;
@@ -1518,7 +1525,7 @@ function closeDetail() {
   planPairHistory.value = [];
   holdings.value = [];
   holdingPortfolio.value = null;
-  fundSnapshot.value = { aaum: [], ter: [] };
+  fundSnapshot.value = { aaum: [], ter: [], factsheet: null };
   debtQuartile.value = null;
   categoryPeerHistories.value = {};
 }
@@ -1678,7 +1685,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <div><p class="eyebrow">{{ selected.category || selected.amc || 'AMFI scheme' }} · {{ selected.scheme_code }}</p><h2>{{ selected.name }}</h2><p class="scheme-category">{{ selected.amc }}<template v-if="selected.category"> · {{ selected.category }}</template></p><p v-if="selected.benchmark_name" class="benchmark-note"><span>Reference benchmark</span>{{ selected.benchmark_name }} <em>{{ selected.benchmark_mapping_status }}</em></p></div>
         <div class="nav"><strong>{{ formatNav(selected.latest_nav) }}</strong><span>NAV · {{ selected.latest_nav_date }}</span></div>
       </div>
-      <section v-if="fundSnapshotLoading || latestAaum || latestTer || holdingPortfolio" class="fund-snapshot" aria-label="Fund snapshot">
+      <section v-if="fundSnapshotLoading || latestAaum || latestTer || latestFactsheet || holdingPortfolio" class="fund-snapshot" aria-label="Fund snapshot">
         <div class="snapshot-heading"><div><p class="eyebrow">Fund snapshot</p><h3>Scale, cost & disclosure</h3></div><p>Source observations<small>Calculated context stays in your browser</small></p></div>
         <p v-if="fundSnapshotLoading" class="snapshot-message">Loading AAUM and TER source history…</p>
         <div v-else class="snapshot-grid">
@@ -1688,6 +1695,14 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
           <div><span>Portfolio disclosure</span><strong>{{ holdingPortfolio ? 'Available' : 'Not imported' }}</strong><small>{{ holdingPortfolio ? `${holdingPortfolio.as_of_date} · ${holdingPortfolio.name}` : 'Shown only when an AMC disclosure is mapped' }}</small></div>
         </div>
         <p v-if="!fundSnapshotLoading" class="snapshot-note">AAUM uses AMFI’s reported average AUM, not month-end AUM. TER is already reflected in NAV and is shown here as a separate cost observation.</p>
+      </section>
+      <section v-if="latestFactsheet" class="fund-snapshot factsheet-section" aria-label="Fund management and exit load">
+        <div class="snapshot-heading"><div><p class="eyebrow">AMC factsheet</p><h3>Fund management & exit load</h3></div><p>{{ latestFactsheet.as_of_date }}<small>Official {{ latestFactsheet.source_amc }} disclosure</small></p></div>
+        <div class="factsheet-grid">
+          <div class="factsheet-exit-load"><span>Exit load</span><strong>{{ latestFactsheet.exit_load_text || 'Not stated in the imported factsheet' }}</strong><small>Always check the current scheme information document before transacting.</small></div>
+          <div class="factsheet-managers"><span>Fund manager{{ factsheetManagers.length === 1 ? '' : 's' }}</span><div v-if="factsheetManagers.length" class="manager-list"><div v-for="manager in factsheetManagers" :key="manager.manager_name"><strong>{{ manager.manager_name }}</strong><small>{{ [manager.managing_since ? `Managing this fund since ${manager.managing_since}` : null, Number.isFinite(manager.experience_years) ? `${manager.experience_years.toFixed(1)} years managing funds` : null].filter(Boolean).join(' · ') || 'Details not stated' }}</small></div></div><strong v-else>Not stated</strong><small v-if="!factsheetManagers.length">No manager record was found in this factsheet.</small></div>
+        </div>
+        <p class="snapshot-note">The details above are reported by the AMC, plan-linked to the scheme, and retained with their factsheet date.</p>
       </section>
       <section v-if="!isDistributionScheme" class="returns" aria-label="Point-to-point returns">
         <div class="returns-heading"><div><p class="eyebrow">Return snapshot</p><h3>Point-to-point returns</h3></div><p>Latest NAV date<small>{{ selected.latest_nav_date }}</small></p></div>
@@ -1743,6 +1758,17 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
           <div><span>1Y Sharpe</span><strong :class="{ positive: debtOneYearRisk?.sharpe > 0, negative: debtOneYearRisk?.sharpe < 0 }">{{ debtOneYearRisk?.sharpe === null || !debtOneYearRisk ? '—' : debtOneYearRisk.sharpe.toFixed(2) }}</strong><small>Uses the RBI Repo Rate baseline</small></div>
         </div>
         <p class="snapshot-note">Holding-level yield, residual maturity and credit quality are calculated below when a mapped monthly portfolio disclosure is available.</p>
+      </section>
+      <section v-if="isDebtScheme && officialDebtQuants" class="fund-snapshot debt-snapshot official-debt-quants" aria-label="Official debt quants">
+        <div class="snapshot-heading"><div><p class="eyebrow">AMC factsheet</p><h3>Official debt quants</h3></div><p>{{ latestFactsheet.as_of_date }}<small>Reported by {{ latestFactsheet.source_amc }}</small></p></div>
+        <div class="snapshot-grid debt-snapshot-grid">
+          <div><span>Modified duration</span><strong>{{ formatFactsheetMetric(officialDebtQuants.modified_duration_years, ' years') }}</strong><small>Interest-rate sensitivity</small></div>
+          <div><span>{{ officialDebtQuants.residual_maturity_years === null ? 'Average maturity' : 'Residual maturity' }}</span><strong>{{ formatFactsheetMetric(officialDebtQuants.residual_maturity_years ?? officialDebtQuants.average_maturity_years, ' years') }}</strong><small>{{ officialDebtQuants.residual_maturity_years === null ? 'Average time until securities mature' : 'Weighted time remaining to maturity' }}</small></div>
+          <div><span>Yield to maturity</span><strong>{{ formatFactsheetMetric(officialDebtQuants.yield_to_maturity_percent, '%') }}</strong><small>Portfolio yield reported by the AMC</small></div>
+          <div><span>Macaulay duration</span><strong>{{ formatFactsheetMetric(officialDebtQuants.macaulay_duration_years, ' years') }}</strong><small>Weighted time to receive cash flows</small></div>
+          <div><span>Standard deviation</span><strong>{{ formatFactsheetMetric(officialDebtQuants.standard_deviation_percent, '%') }}</strong><small>AMC-reported volatility measure</small></div>
+        </div>
+        <p class="snapshot-note">These are factsheet values, not estimates from the holdings table. Their calculation methodology is the AMC’s published methodology.</p>
       </section>
       <section v-if="directRegularComparison" class="direct-regular-section" aria-label="Direct versus Regular plan cost visualiser">
         <div class="direct-regular-heading"><div><p class="eyebrow">Direct vs Regular</p><h3>What the plan choice cost</h3><p>Same investment on {{ directRegularComparison.startDate }}.</p></div><div class="range-controls"><button v-for="range in Object.keys(directRegularRanges)" :key="range" :class="{ active: directRegularRange === range }" @click="directRegularRange = range">{{ range }}</button></div></div>
