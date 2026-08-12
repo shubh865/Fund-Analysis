@@ -57,6 +57,7 @@ const peerBenchmarkMismatchCount = ref(0);
 const peerBenchmarkHistoryAvailable = ref(false);
 const peerLoading = ref(false);
 const peerSort = ref({ key: 'alpha', direction: 'desc' });
+const peerInspectedScheme = ref('');
 const analysisMode = ref('peers');
 const overlapSearch = ref('');
 const overlapResults = ref([]);
@@ -490,9 +491,11 @@ async function loadPeerAnalysis() {
         ...scheme,
         metrics: peerRollingMetrics(payload.histories[scheme.scheme_code], payload.benchmark_history),
       }));
+    peerInspectedScheme.value = peerRows.value.find((scheme) => Object.values(scheme.metrics).some(Boolean))?.scheme_code || '';
   } catch (requestError) {
     error.value = requestError.message;
     peerRows.value = [];
+    peerInspectedScheme.value = '';
     peerBenchmark.value = null;
     peerBenchmarkMismatchCount.value = 0;
     peerBenchmarkHistoryAvailable.value = false;
@@ -509,6 +512,35 @@ const visiblePeerRows = computed(() => peerRows.value
     if (metricDifference) return metricDifference;
     return right.metrics[peerPeriod.value].alpha - left.metrics[peerPeriod.value].alpha;
   }));
+
+const peerInspectableRows = computed(() => peerRows.value
+  .filter((row) => Object.values(row.metrics).some(Boolean))
+  .sort((left, right) => left.name.localeCompare(right.name)));
+
+const peerInspectedRow = computed(() => peerInspectableRows.value
+  .find((row) => row.scheme_code === peerInspectedScheme.value) || peerInspectableRows.value[0] || null);
+
+const peerConsistencyTrend = computed(() => {
+  const row = peerInspectedRow.value;
+  if (!row) return null;
+  const points = [1, 2, 3, 4, 5]
+    .map((years) => ({ years, metric: row.metrics[years] }))
+    .filter((point) => point.metric && Number.isFinite(point.metric.consistency));
+  if (!points.length) return null;
+  const width = 560;
+  const height = 170;
+  const padding = { top: 18, right: 18, bottom: 32, left: 42 };
+  const x = (index) => points.length === 1 ? width / 2 : padding.left + (index / (points.length - 1)) * (width - padding.left - padding.right);
+  const y = (value) => padding.top + ((100 - value) / 100) * (height - padding.top - padding.bottom);
+  const change = points.at(-1).metric.consistency - points[0].metric.consistency;
+  return {
+    ...row,
+    width, height, padding, points: points.map((point, index) => ({ ...point, x: x(index), y: y(point.metric.consistency) })),
+    polyline: points.map((point, index) => `${x(index).toFixed(1)},${y(point.metric.consistency).toFixed(1)}`).join(' '),
+    interpretation: change >= 5 ? 'Improving consistency' : change <= -5 ? 'Weakening consistency' : 'Stable consistency',
+    change,
+  };
+});
 
 function togglePeerSort(key) {
   peerSort.value = peerSort.value.key === key
@@ -1694,6 +1726,12 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <p v-else-if="!peerBenchmarkHistoryAvailable" class="message">The mapped benchmark's TRI history is not available from an approved source, so alpha and consistency are not calculated.</p>
       <p v-else-if="!visiblePeerRows.length" class="message">No eligible Growth plans have enough matching NAV and benchmark TRI history for this period.</p>
       <div v-else class="peer-table-wrap"><div class="peer-table"><div class="peer-head"><span>Scheme</span><span>Fund avg</span><span>Benchmark avg</span><button type="button" class="peer-sort" @click="togglePeerSort('alpha')">Alpha {{ peerSort.key === 'alpha' ? (peerSort.direction === 'desc' ? '↓' : '↑') : '↕' }}</button><button type="button" class="peer-sort" @click="togglePeerSort('consistency')">Consistency {{ peerSort.key === 'consistency' ? (peerSort.direction === 'desc' ? '↓' : '↑') : '↕' }}</button></div><button v-for="row in visiblePeerRows" :key="row.scheme_code" class="peer-row" @click="openScheme(row.scheme_code)"><span><strong>{{ row.name }}</strong><small>{{ row.amc }}</small></span><strong data-label="Fund avg" :class="{ positive: row.metrics[peerPeriod].averageFund > 0, negative: row.metrics[peerPeriod].averageFund < 0 }">{{ row.metrics[peerPeriod].averageFund.toFixed(2) }}%</strong><strong data-label="Benchmark avg" :class="{ positive: row.metrics[peerPeriod].averageBenchmark > 0, negative: row.metrics[peerPeriod].averageBenchmark < 0 }">{{ row.metrics[peerPeriod].averageBenchmark.toFixed(2) }}%</strong><strong data-label="Alpha" :class="{ positive: row.metrics[peerPeriod].alpha > 0, negative: row.metrics[peerPeriod].alpha < 0 }">{{ row.metrics[peerPeriod].alpha >= 0 ? '+' : '' }}{{ row.metrics[peerPeriod].alpha.toFixed(2) }}%</strong><strong data-label="Consistency">{{ row.metrics[peerPeriod].consistency.toFixed(1) }}%</strong></button></div></div>
+      <section v-if="peerConsistencyTrend" class="peer-consistency-journey" aria-label="Fund consistency journey">
+        <div class="peer-journey-heading"><div><p class="eyebrow">Consistency journey</p><h3>How one fund held up over time</h3><p>Share of rolling windows in which the fund beat its mapped benchmark.</p></div><label for="peer-inspected-scheme">Inspect a fund<select id="peer-inspected-scheme" v-model="peerInspectedScheme"><option v-for="row in peerInspectableRows" :key="row.scheme_code" :value="row.scheme_code">{{ row.name }}</option></select></label></div>
+        <div class="peer-journey-summary"><div><span>{{ peerConsistencyTrend.interpretation }}</span><strong :class="{ positive: peerConsistencyTrend.change > 0, negative: peerConsistencyTrend.change < 0 }">{{ peerConsistencyTrend.change >= 0 ? '+' : '' }}{{ peerConsistencyTrend.change.toFixed(1) }} pp</strong><small>1Y to latest available holding period</small></div><div><span>Latest consistency</span><strong>{{ peerConsistencyTrend.points.at(-1).metric.consistency.toFixed(1) }}%</strong><small>{{ peerConsistencyTrend.points.at(-1).years }}Y holding period</small></div></div>
+        <div class="peer-trend-chart-wrap"><svg class="peer-trend-chart" :viewBox="`0 0 ${peerConsistencyTrend.width} ${peerConsistencyTrend.height}`" role="img" :aria-label="`Consistency trend for ${peerConsistencyTrend.name}`"><line v-for="value in [0, 50, 100]" :key="value" class="grid-line" :x1="peerConsistencyTrend.padding.left" :x2="peerConsistencyTrend.width - peerConsistencyTrend.padding.right" :y1="peerConsistencyTrend.padding.top + ((100 - value) / 100) * (peerConsistencyTrend.height - peerConsistencyTrend.padding.top - peerConsistencyTrend.padding.bottom)" :y2="peerConsistencyTrend.padding.top + ((100 - value) / 100) * (peerConsistencyTrend.height - peerConsistencyTrend.padding.top - peerConsistencyTrend.padding.bottom)" /><text v-for="value in [100, 50, 0]" :key="`axis-${value}`" class="axis-label" :x="peerConsistencyTrend.padding.left - 8" :y="peerConsistencyTrend.padding.top + ((100 - value) / 100) * (peerConsistencyTrend.height - peerConsistencyTrend.padding.top - peerConsistencyTrend.padding.bottom) + 4" text-anchor="end">{{ value }}%</text><polyline class="peer-trend-line" :points="peerConsistencyTrend.polyline" fill="none" /><g v-for="point in peerConsistencyTrend.points" :key="point.years"><circle class="peer-trend-point" :cx="point.x" :cy="point.y" r="4" /><text class="peer-trend-value" :x="point.x" :y="point.y - 10" text-anchor="middle">{{ point.metric.consistency.toFixed(1) }}%</text><text class="axis-label" :x="point.x" :y="peerConsistencyTrend.height - 8" text-anchor="middle">{{ point.years }}Y</text></g></svg></div>
+        <div class="peer-journey-values"><div v-for="point in peerConsistencyTrend.points" :key="point.years"><span>{{ point.years }}Y consistency</span><strong>{{ point.metric.consistency.toFixed(1) }}%</strong><small>{{ point.metric.observations.toLocaleString() }} rolling windows</small></div></div>
+      </section>
       <p v-if="visiblePeerRows.length" class="compare-footnote">Each window uses the same available fund NAV and benchmark TRI dates. Alpha means average fund return minus average benchmark return; consistency is the share of windows where the fund beat the benchmark.</p>
     </section>
 
