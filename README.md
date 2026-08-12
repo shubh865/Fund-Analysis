@@ -16,7 +16,7 @@ The product is designed for analysis rather than a static return screener: sourc
 - Rank category peers in quartiles, with Direct and Regular Growth shown side-by-side.
 - Review AMFI AAUM, daily TER, current scheme-level AUM and available monthly portfolio disclosures.
 - Provide top holdings, sector allocation and debt holding/rating summaries where the corresponding AMC disclosure has been ingested and mapped.
-- Show official exit-load terms, fund-manager details and available debt quants from dated AMC factsheets (currently ABSL, HDFC, SBI, Kotak, Axis, PPFAS, Nippon India, UTI, Invesco, Mirae Asset, Canara Robeco, Baroda BNP Paribas, Edelweiss, Tata, Motilal Oswal, HSBC, Franklin Templeton and DSP coverage).
+- Show official exit-load terms, fund-manager details and available debt quants from dated AMC factsheets (currently ABSL, HDFC, SBI, Kotak, Axis, PPFAS, Nippon India, UTI, Invesco, Mirae Asset, Canara Robeco, Baroda BNP Paribas, Edelweiss, Tata, Motilal Oswal, HSBC, Franklin Templeton, DSP and quant coverage).
 
 ## Data model and calculation principle
 
@@ -127,6 +127,7 @@ npm run refresh:motilal-factsheets
 npm run refresh:hsbc-factsheets
 npm run refresh:franklin-factsheets
 npm run refresh:dsp-factsheets
+npm run refresh:quant-factsheets
 
 # Refresh every validated official AMC factsheet source
 npm run refresh:all-factsheets
