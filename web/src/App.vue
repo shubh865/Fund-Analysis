@@ -26,6 +26,7 @@ const debtQuartile = ref(null);
 const debtQuartileLoading = ref(false);
 const detailLoading = ref(false);
 const selectedRange = ref('1Y');
+const chartHover = ref(null);
 const ranges = { '1Y': 12, '3Y': 36, '5Y': 60, All: null };
 const directRegularRange = ref('5Y');
 const directRegularRanges = { '1Y': 12, '3Y': 36, '5Y': 60, '10Y': 120, All: null };
@@ -1578,6 +1579,8 @@ const chart = computed(() => {
   return {
     width, height, padding, min, max,
     comparison,
+    points,
+    xPositions: points.map((_, index) => x(index)),
     fundPolyline: points.map((point, index) => `${x(index).toFixed(1)},${y(point.fundValue).toFixed(1)}`).join(' '),
     benchmarkPolyline: comparison ? points.map((point, index) => `${x(index).toFixed(1)},${y(point.benchmarkValue).toFixed(1)}`).join(' ') : null,
     start: points[0], end: points.at(-1),
@@ -1585,6 +1588,35 @@ const chart = computed(() => {
     endBenchmarkY: comparison ? y(points.at(-1).benchmarkValue) : null,
   };
 });
+
+const chartHoverDetails = computed(() => {
+  const value = chart.value;
+  const index = chartHover.value;
+  if (!value || !Number.isInteger(index) || index < 0 || index >= value.points.length) return null;
+  const point = value.points[index];
+  const x = value.xPositions[index];
+  const plotHeight = value.height - value.padding.top - value.padding.bottom;
+  const y = (metric) => value.padding.top + ((value.max - metric) / (value.max - value.min || Math.max(value.max * 0.02, 1))) * plotHeight;
+  return {
+    date: point.date,
+    x,
+    left: Math.min(84, Math.max(6, (x / value.width) * 100)),
+    fundValue: point.fundValue,
+    fundY: y(point.fundValue),
+    benchmarkValue: value.comparison ? point.benchmarkValue : null,
+    benchmarkY: value.comparison ? y(point.benchmarkValue) : null,
+  };
+});
+
+function updateChartHover(event) {
+  const value = chart.value;
+  if (!value) return;
+  const rect = event.currentTarget.getBoundingClientRect();
+  const svgX = ((event.clientX - rect.left) / rect.width) * value.width;
+  const plotWidth = value.width - value.padding.left - value.padding.right;
+  const index = Math.round(((svgX - value.padding.left) / plotWidth) * (value.points.length - 1));
+  chartHover.value = Math.max(0, Math.min(value.points.length - 1, index));
+}
 
 async function openScheme(schemeCode) {
   detailLoading.value = true;
@@ -1949,18 +1981,30 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         </section>
         <section class="chart-section" aria-label="NAV history chart">
           <div class="chart-header"><div><p class="eyebrow">NAV history</p><h3>{{ chart?.comparison ? 'Fund vs benchmark growth' : `${selectedRange} range` }}</h3><p v-if="chart?.comparison" class="chart-caption">Both lines rebased to 100 on {{ chart.start.date }}</p></div><div><div class="range-controls"><button v-for="range in Object.keys(ranges)" :key="range" :class="{ active: selectedRange === range }" @click="selectedRange = range">{{ range }}</button></div><div v-if="chart?.comparison" class="chart-legend"><span><i class="fund-swatch"></i>Fund</span><span><i class="benchmark-swatch"></i>{{ selected.benchmark_name }}</span></div></div></div>
-          <div v-if="chart" class="chart-wrap">
-            <svg class="nav-chart" :viewBox="`0 0 ${chart.width} ${chart.height}`" role="img" :aria-label="chart.comparison ? `Fund and benchmark growth from ${chart.start.date} to ${chart.end.date}` : `NAV history from ${chart.start.date} to ${chart.end.date}`">
+          <div v-if="chart" class="chart-wrap interactive-chart-wrap">
+            <svg class="nav-chart" :viewBox="`0 0 ${chart.width} ${chart.height}`" role="img" :aria-label="chart.comparison ? `Fund and benchmark growth from ${chart.start.date} to ${chart.end.date}` : `NAV history from ${chart.start.date} to ${chart.end.date}`" @pointermove="updateChartHover" @pointerdown="updateChartHover" @pointerleave="chartHover = null">
               <line v-for="fraction in [0, 0.5, 1]" :key="fraction" class="grid-line" :x1="chart.padding.left" :x2="chart.width - chart.padding.right" :y1="chart.padding.top + fraction * (chart.height - chart.padding.top - chart.padding.bottom)" :y2="chart.padding.top + fraction * (chart.height - chart.padding.top - chart.padding.bottom)" />
               <text class="axis-label" :x="chart.padding.left - 8" :y="chart.padding.top + 4" text-anchor="end">{{ chart.comparison ? chart.max.toFixed(1) : formatNav(chart.max) }}</text>
               <text class="axis-label" :x="chart.padding.left - 8" :y="chart.height - chart.padding.bottom + 4" text-anchor="end">{{ chart.comparison ? chart.min.toFixed(1) : formatNav(chart.min) }}</text>
               <polyline v-if="chart.benchmarkPolyline" class="benchmark-line" :points="chart.benchmarkPolyline" fill="none" />
               <polyline class="nav-line" :points="chart.fundPolyline" fill="none" />
+              <line v-if="chartHoverDetails" class="compare-hover-guide" :x1="chartHoverDetails.x" :x2="chartHoverDetails.x" :y1="chart.padding.top" :y2="chart.height - chart.padding.bottom" />
+              <circle v-if="chartHoverDetails" class="compare-hover-point" :cx="chartHoverDetails.x" :cy="chartHoverDetails.fundY" r="4" />
+              <circle v-if="chartHoverDetails && chartHoverDetails.benchmarkY !== null" class="benchmark-hover-point" :cx="chartHoverDetails.x" :cy="chartHoverDetails.benchmarkY" r="4" />
               <circle class="endpoint" :cx="chart.width - chart.padding.right" :cy="chart.endFundY" r="4" />
               <circle v-if="chart.endBenchmarkY !== null" class="benchmark-endpoint" :cx="chart.width - chart.padding.right" :cy="chart.endBenchmarkY" r="3.5" />
               <text class="axis-label" :x="chart.padding.left" :y="chart.height - 7">{{ chart.start.date }}</text>
               <text class="axis-label" :x="chart.width - chart.padding.right" :y="chart.height - 7" text-anchor="end">{{ chart.end.date }}</text>
             </svg>
+            <aside v-if="chartHoverDetails" class="compare-chart-tooltip scheme-chart-tooltip" :style="{ left: `${chartHoverDetails.left}%` }">
+              <strong>{{ chartHoverDetails.date }}</strong>
+              <template v-if="chart.comparison">
+                <div><span><i class="fund-swatch"></i>Fund</span><b>{{ chartHoverDetails.fundValue.toFixed(2) }}</b></div>
+                <div><span><i class="benchmark-swatch"></i>{{ selected.benchmark_name }}</span><b>{{ chartHoverDetails.benchmarkValue.toFixed(2) }}</b></div>
+                <div class="chart-tooltip-gap"><span>Fund lead</span><b :class="{ positive: chartHoverDetails.fundValue - chartHoverDetails.benchmarkValue > 0, negative: chartHoverDetails.fundValue - chartHoverDetails.benchmarkValue < 0 }">{{ chartHoverDetails.fundValue - chartHoverDetails.benchmarkValue >= 0 ? '+' : '' }}{{ (chartHoverDetails.fundValue - chartHoverDetails.benchmarkValue).toFixed(2) }} pts</b></div>
+              </template>
+              <div v-else><span><i class="fund-swatch"></i>NAV</span><b>{{ formatNav(chartHoverDetails.fundValue) }}</b></div>
+            </aside>
           </div>
         </section>
         <p class="history-note">{{ history.length.toLocaleString() }} NAV observations · {{ history[0].date }} to {{ history.at(-1).date }} · calculated in your browser</p>
