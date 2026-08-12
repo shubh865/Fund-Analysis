@@ -46,6 +46,7 @@ const compareResults = ref([]);
 const compareSelection = ref([]);
 const compareLoading = ref(false);
 const compareChartRange = ref('1Y');
+const compareChartHover = ref(null);
 const peerMainCategory = ref('');
 const peerCategory = ref('');
 const peerPeriod = ref(1);
@@ -555,6 +556,12 @@ async function addToComparison(scheme) {
 
 function removeFromComparison(schemeCode) {
   compareSelection.value = compareSelection.value.filter((item) => item.scheme.scheme_code !== schemeCode);
+  compareChartHover.value = null;
+}
+
+function setCompareChartRange(range) {
+  compareChartRange.value = range;
+  compareChartHover.value = null;
 }
 
 async function searchPortfolioOverlap() {
@@ -821,7 +828,8 @@ const compareChart = computed(() => {
   const x = (index) => padding.left + (index / (dates.length - 1)) * (width - padding.left - padding.right);
   const y = (value) => padding.top + ((max - value) / span) * (height - padding.top - padding.bottom);
   return {
-    width, height, padding, min, max, startDate: commonDates[0], endDate: commonDates.at(-1),
+    width, height, padding, min, max, dates, startDate: commonDates[0], endDate: commonDates.at(-1),
+    xPositions: dates.map((_, index) => x(index)),
     series: series.map((item) => ({
       ...item,
       polyline: item.values.map((value, index) => `${x(index).toFixed(1)},${y(value).toFixed(1)}`).join(' '),
@@ -829,6 +837,33 @@ const compareChart = computed(() => {
     })),
   };
 });
+
+const compareChartHoverDetails = computed(() => {
+  const chart = compareChart.value;
+  const index = compareChartHover.value;
+  if (!chart || !Number.isInteger(index) || index < 0 || index >= chart.dates.length) return null;
+  const x = chart.xPositions[index];
+  return {
+    date: chart.dates[index],
+    x,
+    left: Math.min(84, Math.max(6, (x / chart.width) * 100)),
+    series: chart.series.map((item) => ({
+      ...item,
+      value: item.values[index],
+      returnSinceStart: item.values[index] - 100,
+    })),
+  };
+});
+
+function updateCompareChartHover(event) {
+  const chart = compareChart.value;
+  if (!chart) return;
+  const rect = event.currentTarget.getBoundingClientRect();
+  const svgX = ((event.clientX - rect.left) / rect.width) * chart.width;
+  const plotWidth = chart.width - chart.padding.left - chart.padding.right;
+  const index = Math.round(((svgX - chart.padding.left) / plotWidth) * (chart.dates.length - 1));
+  compareChartHover.value = Math.max(0, Math.min(chart.dates.length - 1, index));
+}
 
 const benchmarkComparison = computed(() => {
   if (isDistributionScheme.value || !selected.value?.benchmark_name || !benchmarkHistory.value.length || !history.value.length) return null;
@@ -1637,8 +1672,8 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <div v-if="compareResults.length" class="compare-results"><button v-for="scheme in compareResults" :key="scheme.scheme_code" :disabled="compareSelection.some((item) => item.scheme.scheme_code === scheme.scheme_code) || compareSelection.length >= 5" @click="addToComparison(scheme)"><span><strong>{{ scheme.name }}</strong><small>{{ scheme.amc }} · {{ scheme.category || 'Category not supplied' }}</small></span><span>+ Add</span></button></div>
       <p v-else-if="!compareSelection.length" class="message">Search for the first scheme you would like to compare.</p>
       <section v-if="compareChart" class="chart-section compare-chart-section" aria-label="Selected-fund NAV growth chart">
-        <div class="chart-header"><div><p class="eyebrow">NAV comparison</p><h3>Selected funds growth</h3><p class="chart-caption">All selected funds rebased to 100 on {{ compareChart.startDate }}</p></div><div><div class="range-controls"><button v-for="range in Object.keys(ranges)" :key="range" :class="{ active: compareChartRange === range }" @click="compareChartRange = range">{{ range }}</button></div><div class="chart-legend compare-chart-legend"><span v-for="series in compareChart.series" :key="series.schemeCode"><i :style="{ background: series.color }"></i>{{ series.name }}</span></div></div></div>
-        <div class="chart-wrap"><svg class="nav-chart" :viewBox="`0 0 ${compareChart.width} ${compareChart.height}`" role="img" :aria-label="`Selected fund growth from ${compareChart.startDate} to ${compareChart.endDate}`"><line v-for="fraction in [0, 0.5, 1]" :key="fraction" class="grid-line" :x1="compareChart.padding.left" :x2="compareChart.width - compareChart.padding.right" :y1="compareChart.padding.top + fraction * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" :y2="compareChart.padding.top + fraction * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" /><text class="axis-label" :x="compareChart.padding.left - 8" :y="compareChart.padding.top + 4" text-anchor="end">{{ compareChart.max.toFixed(1) }}</text><text class="axis-label" :x="compareChart.padding.left - 8" :y="compareChart.height - compareChart.padding.bottom + 4" text-anchor="end">{{ compareChart.min.toFixed(1) }}</text><polyline v-for="series in compareChart.series" :key="series.schemeCode" class="compare-series-line" :style="{ stroke: series.color }" :points="series.polyline" fill="none" /><circle v-for="series in compareChart.series" :key="`${series.schemeCode}-end`" class="compare-series-endpoint" :style="{ fill: series.color }" :cx="compareChart.width - compareChart.padding.right" :cy="series.endY" r="3.5" /><text class="axis-label" :x="compareChart.padding.left" :y="compareChart.height - 7">{{ compareChart.startDate }}</text><text class="axis-label" :x="compareChart.width - compareChart.padding.right" :y="compareChart.height - 7" text-anchor="end">{{ compareChart.endDate }}</text></svg></div>
+        <div class="chart-header"><div><p class="eyebrow">NAV comparison</p><h3>Selected funds growth</h3><p class="chart-caption">All selected funds rebased to 100 on {{ compareChart.startDate }}</p></div><div><div class="range-controls"><button v-for="range in Object.keys(ranges)" :key="range" :class="{ active: compareChartRange === range }" @click="setCompareChartRange(range)">{{ range }}</button></div><div class="chart-legend compare-chart-legend"><span v-for="series in compareChart.series" :key="series.schemeCode"><i :style="{ background: series.color }"></i>{{ series.name }}</span></div></div></div>
+        <div class="chart-wrap compare-chart-wrap"><svg class="nav-chart" :viewBox="`0 0 ${compareChart.width} ${compareChart.height}`" role="img" :aria-label="`Selected fund growth from ${compareChart.startDate} to ${compareChart.endDate}`" @pointermove="updateCompareChartHover" @pointerdown="updateCompareChartHover" @pointerleave="compareChartHover = null"><line v-for="fraction in [0, 0.5, 1]" :key="fraction" class="grid-line" :x1="compareChart.padding.left" :x2="compareChart.width - compareChart.padding.right" :y1="compareChart.padding.top + fraction * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" :y2="compareChart.padding.top + fraction * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" /><text class="axis-label" :x="compareChart.padding.left - 8" :y="compareChart.padding.top + 4" text-anchor="end">{{ compareChart.max.toFixed(1) }}</text><text class="axis-label" :x="compareChart.padding.left - 8" :y="compareChart.height - compareChart.padding.bottom + 4" text-anchor="end">{{ compareChart.min.toFixed(1) }}</text><polyline v-for="series in compareChart.series" :key="series.schemeCode" class="compare-series-line" :style="{ stroke: series.color }" :points="series.polyline" fill="none" /><line v-if="compareChartHoverDetails" class="compare-hover-guide" :x1="compareChartHoverDetails.x" :x2="compareChartHoverDetails.x" :y1="compareChart.padding.top" :y2="compareChart.height - compareChart.padding.bottom" /><circle v-for="series in compareChart.series" :key="`${series.schemeCode}-end`" class="compare-series-endpoint" :style="{ fill: series.color }" :cx="compareChart.width - compareChart.padding.right" :cy="series.endY" r="3.5" /><circle v-for="series in compareChartHoverDetails?.series || []" :key="`${series.schemeCode}-hover`" class="compare-hover-point" :style="{ fill: series.color }" :cx="compareChartHoverDetails.x" :cy="compareChart.padding.top + ((compareChart.max - series.value) / (compareChart.max - compareChart.min || Math.max(compareChart.max * 0.02, 1))) * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" r="4" /><text class="axis-label" :x="compareChart.padding.left" :y="compareChart.height - 7">{{ compareChart.startDate }}</text><text class="axis-label" :x="compareChart.width - compareChart.padding.right" :y="compareChart.height - 7" text-anchor="end">{{ compareChart.endDate }}</text></svg><aside v-if="compareChartHoverDetails" class="compare-chart-tooltip" :style="{ left: `${compareChartHoverDetails.left}%` }"><strong>{{ compareChartHoverDetails.date }}</strong><div v-for="series in compareChartHoverDetails.series" :key="series.schemeCode"><span><i :style="{ background: series.color }"></i>{{ series.name }}</span><b>{{ series.value.toFixed(2) }} <small>{{ series.returnSinceStart >= 0 ? '+' : '' }}{{ series.returnSinceStart.toFixed(2) }}%</small></b></div></aside></div>
       </section>
       <div v-if="compareRows.length" class="compare-matrix-wrap"><div class="compare-matrix"><div class="compare-matrix-head"><span>Scheme</span><span>NAV</span><span>Total AUM</span><span>1Y</span><span>3Y CAGR</span><span>5Y CAGR</span><span>1Y alpha</span><span>3Y alpha</span><span>5Y alpha</span><span></span></div><div v-for="row in compareRows" :key="row.scheme.scheme_code" class="compare-matrix-row"><span class="compare-scheme"><strong>{{ row.scheme.name }}</strong><small>{{ row.scheme.amc }} · {{ row.scheme.category || 'Category not supplied' }}</small></span><strong data-label="NAV">{{ formatNav(row.latestNav) }}</strong><strong data-label="Total AUM">{{ row.scheme.total_aum_crore === null || row.scheme.total_aum_crore === undefined ? '—' : `₹${row.scheme.total_aum_crore.toLocaleString('en-IN', { maximumFractionDigits: 0 })} Cr` }}</strong><strong data-label="1Y" :class="{ positive: row.returns.oneYear > 0, negative: row.returns.oneYear < 0 }">{{ row.returns.oneYear === null ? '—' : `${row.returns.oneYear >= 0 ? '+' : ''}${row.returns.oneYear.toFixed(2)}%` }}</strong><strong data-label="3Y CAGR" :class="{ positive: row.returns.threeYear > 0, negative: row.returns.threeYear < 0 }">{{ row.returns.threeYear === null ? '—' : `${row.returns.threeYear >= 0 ? '+' : ''}${row.returns.threeYear.toFixed(2)}%` }}</strong><strong data-label="5Y CAGR" :class="{ positive: row.returns.fiveYear > 0, negative: row.returns.fiveYear < 0 }">{{ row.returns.fiveYear === null ? '—' : `${row.returns.fiveYear >= 0 ? '+' : ''}${row.returns.fiveYear.toFixed(2)}%` }}</strong><strong data-label="1Y alpha" :class="{ positive: row.benchmarkOutperformance.oneYear > 0, negative: row.benchmarkOutperformance.oneYear < 0 }">{{ row.benchmarkOutperformance.oneYear === null ? '—' : `${row.benchmarkOutperformance.oneYear >= 0 ? '+' : ''}${row.benchmarkOutperformance.oneYear.toFixed(2)}%` }}</strong><strong data-label="3Y alpha" :class="{ positive: row.benchmarkOutperformance.threeYear > 0, negative: row.benchmarkOutperformance.threeYear < 0 }">{{ row.benchmarkOutperformance.threeYear === null ? '—' : `${row.benchmarkOutperformance.threeYear >= 0 ? '+' : ''}${row.benchmarkOutperformance.threeYear.toFixed(2)}%` }}</strong><strong data-label="5Y alpha" :class="{ positive: row.benchmarkOutperformance.fiveYear > 0, negative: row.benchmarkOutperformance.fiveYear < 0 }">{{ row.benchmarkOutperformance.fiveYear === null ? '—' : `${row.benchmarkOutperformance.fiveYear >= 0 ? '+' : ''}${row.benchmarkOutperformance.fiveYear.toFixed(2)}%` }}</strong><button class="remove-compare" aria-label="Remove scheme" @click="removeFromComparison(row.scheme.scheme_code)">×</button></div></div></div>
       <p v-if="compareRows.length" class="compare-footnote">Alpha is fund return minus its mapped benchmark return.</p>
