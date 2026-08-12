@@ -34,6 +34,7 @@
     "refresh:baroda-factsheets": "node scripts/refresh-baroda-factsheets.js",
     "refresh:edelweiss-factsheets": "node scripts/refresh-edelweiss-factsheets.js",
     "refresh:tata-factsheets": "node scripts/refresh-tata-factsheets.js",
+    "refresh:motilal-factsheets": "node scripts/refresh-motilal-factsheets.js",
     "refresh:all-factsheets": "node scripts/refresh-all-factsheets.js",
     "import:icici-holdings": "node scripts/import-icici-holdings.js",
     "map:icici-portfolios": "node scripts/map-icici-portfolios.js",
