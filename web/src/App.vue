@@ -326,11 +326,23 @@ const quartileTables = computed(() => {
     includedAmcs.add(entry.amc);
     return true;
   });
-  return [0, 1, 2, 3].map((quartile) => ({
-    label: `Q${quartile + 1}`,
-    subtitle: ['Top 25%', 'Next 25%', 'Next 25%', 'Bottom 25%'][quartile],
-    rows: displayedAmcs.filter((_, index) => Math.min(3, Math.floor(index * 4 / displayedAmcs.length)) === quartile),
-  }));
+  // Split the ranked set into consecutive, near-equal groups. The earlier
+  // proportional-index approach could put two funds in Q1 and Q3, leaving
+  // Q2 empty. Filling groups in order keeps small historical universes
+  // intelligible: two funds become Q1 and Q2, not Q1 and Q3.
+  const baseSize = Math.floor(displayedAmcs.length / 4);
+  const remainder = displayedAmcs.length % 4;
+  let offset = 0;
+  return [0, 1, 2, 3].map((quartile) => {
+    const size = baseSize + (quartile < remainder ? 1 : 0);
+    const rows = displayedAmcs.slice(offset, offset + size);
+    offset += size;
+    return {
+      label: `Q${quartile + 1}`,
+      subtitle: ['Top 25%', 'Next 25%', 'Next 25%', 'Bottom 25%'][quartile],
+      rows,
+    };
+  });
 });
 
 const quartileGrossCoverage = computed(() => {
