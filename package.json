@@ -32,6 +32,7 @@
     "refresh:mirae-factsheets": "node scripts/refresh-mirae-factsheets.js",
     "refresh:canara-factsheets": "node scripts/refresh-canara-factsheets.js",
     "refresh:baroda-factsheets": "node scripts/refresh-baroda-factsheets.js",
+    "refresh:edelweiss-factsheets": "node scripts/refresh-edelweiss-factsheets.js",
     "refresh:all-factsheets": "node scripts/refresh-all-factsheets.js",
     "import:icici-holdings": "node scripts/import-icici-holdings.js",
     "map:icici-portfolios": "node scripts/map-icici-portfolios.js",
