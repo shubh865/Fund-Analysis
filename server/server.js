@@ -578,6 +578,30 @@ app.get('/api/categories/:category/nav-snapshot', (request, response) => {
       // month end. Two weeks keeps valid month slices without admitting stale funds.
       && daysBetween(scheme.latest_date, effectiveAsOfDate) <= 14
     ));
+    // Growth NAV should be continuous. A very large one-day move is not an
+    // investment return; it indicates a historical source/mapping break (for
+    // example, two differently scaled NAV series joined under one scheme code).
+    // Do not allow such a series to distort a category quartile.
+    if (schemes.length) {
+      const startDateByCode = new Map(schemes.map((scheme) => [scheme.scheme_code, scheme.start_date]));
+      const discontinuousCodes = new Set(db.prepare(`
+        WITH ordered_nav AS (
+          SELECT scheme_code, date, nav,
+            LAG(nav) OVER (PARTITION BY scheme_code ORDER BY date) AS prior_nav
+          FROM nav_daily
+          WHERE scheme_code IN (${schemes.map(() => '?').join(', ')})
+        )
+        SELECT ordered_nav.scheme_code, ordered_nav.date
+        FROM ordered_nav
+        WHERE ordered_nav.date <= ?
+          AND prior_nav > 0
+          AND (nav / prior_nav > 1.5 OR nav / prior_nav < (1.0 / 1.5))
+      `).all(
+        ...schemes.map((scheme) => scheme.scheme_code),
+        effectiveAsOfDate,
+      ).filter((row) => row.date > startDateByCode.get(row.scheme_code)).map((row) => row.scheme_code));
+      schemes = schemes.filter((scheme) => !discontinuousCodes.has(scheme.scheme_code));
+    }
   }
   if (String(request.query.includeTer || '') === '1' && schemes.length) {
     const firstStartDate = schemes.reduce((earliest, scheme) => (
