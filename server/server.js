@@ -1,11 +1,87 @@
 const express = require('express');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 const db = require('./db');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const marketNewsCache = new Map();
+const sessions = new Map();
+const sessionMaxAgeMs = 12 * 60 * 60 * 1000;
+
+function loadLocalEnvironment() {
+  const environmentPath = path.join(__dirname, '..', '.env');
+  if (!fs.existsSync(environmentPath)) return;
+  for (const rawLine of fs.readFileSync(environmentPath, 'utf8').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const separator = line.indexOf('=');
+    if (separator < 1) continue;
+    const key = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1).trim().replace(/^(["'])(.*)\1$/, '$2');
+    if (!(key in process.env)) process.env[key] = value;
+  }
+}
+
+loadLocalEnvironment();
+const authUsername = process.env.AUTH_USERNAME || 'admin';
+const authPassword = process.env.AUTH_PASSWORD || 'change-me';
+if (!process.env.AUTH_PASSWORD) console.warn('Authentication is using the default password. Create .env from .env.example before sharing this site.');
 
 app.use(express.json());
+
+function readCookies(request) {
+  return Object.fromEntries(String(request.headers.cookie || '').split(';').map((item) => {
+    const separator = item.indexOf('=');
+    return separator < 0 ? [] : [item.slice(0, separator).trim(), decodeURIComponent(item.slice(separator + 1).trim())];
+  }).filter((item) => item.length));
+}
+
+function activeSession(request) {
+  const token = readCookies(request).fund_analysis_session;
+  const session = token && sessions.get(token);
+  if (!session || session.expiresAt <= Date.now()) {
+    if (token) sessions.delete(token);
+    return null;
+  }
+  return { token, ...session };
+}
+
+function sessionCookie(token, maxAgeSeconds = sessionMaxAgeMs / 1000) {
+  return `fund_analysis_session=${encodeURIComponent(token || '')}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+}
+
+app.get('/api/auth/session', (request, response) => {
+  const session = activeSession(request);
+  response.json({ authenticated: Boolean(session), username: session?.username || null });
+});
+
+app.post('/api/auth/login', (request, response) => {
+  const username = String(request.body?.username || '').trim();
+  const password = String(request.body?.password || '');
+  if (!username || !password || username !== authUsername || password !== authPassword) {
+    return response.status(401).json({ error: 'Incorrect username or password.' });
+  }
+  const token = crypto.randomBytes(32).toString('base64url');
+  sessions.set(token, { username, expiresAt: Date.now() + sessionMaxAgeMs });
+  response.setHeader('Set-Cookie', sessionCookie(token));
+  response.json({ authenticated: true, username });
+});
+
+app.post('/api/auth/logout', (request, response) => {
+  const session = activeSession(request);
+  if (session) sessions.delete(session.token);
+  response.setHeader('Set-Cookie', sessionCookie('', 0));
+  response.status(204).end();
+});
+
+// All analytics data stays behind the local authenticated session.
+app.use('/api', (request, response, next) => {
+  if (request.path === '/health') return next();
+  if (!activeSession(request)) return response.status(401).json({ error: 'Please sign in to access the analytics.' });
+  return next();
+});
 
 function decodeXml(value) {
   return String(value || '')

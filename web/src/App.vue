@@ -75,7 +75,46 @@ const navDriverData = ref(null);
 const navDriverLoading = ref(false);
 const marketSectorPulse = ref(null);
 const marketSectorNews = ref(null);
+const authReady = ref(false);
+const authenticatedUser = ref('');
+const loginUsername = ref('');
+const loginPassword = ref('');
+const loginError = ref('');
+const loginLoading = ref(false);
 let searchTimer;
+
+async function checkSession() {
+  const response = await fetch('/api/auth/session');
+  const payload = await response.json();
+  authenticatedUser.value = payload.authenticated ? payload.username : '';
+  authReady.value = true;
+}
+
+async function signIn() {
+  loginLoading.value = true;
+  loginError.value = '';
+  try {
+    const response = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: loginUsername.value, password: loginPassword.value }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not sign in.');
+    authenticatedUser.value = payload.username;
+    loginPassword.value = '';
+    await Promise.all([loadSchemes(), loadCategories()]);
+  } catch (requestError) {
+    loginError.value = requestError.message;
+  } finally {
+    loginLoading.value = false;
+  }
+}
+
+async function signOut() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  authenticatedUser.value = '';
+  selected.value = null;
+}
 
 const displaySchemes = computed(() => schemes.value.slice(0, 50));
 
@@ -1695,15 +1734,32 @@ function closeDetail() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadSchemes(), loadCategories()]);
+  await checkSession();
+  if (authenticatedUser.value) await Promise.all([loadSchemes(), loadCategories()]);
 });
 onBeforeUnmount(() => clearTimeout(searchTimer));
 </script>
 
 <template>
+  <main v-if="!authReady" class="login-shell"><p>Checking secure access…</p></main>
+  <main v-else-if="!authenticatedUser" class="login-shell">
+    <section class="login-card" aria-label="Sign in">
+      <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
+      <h1>Internal<br><em>access.</em></h1>
+      <p>Sign in to open the research workspace.</p>
+      <form @submit.prevent="signIn">
+        <label for="login-username">Username</label>
+        <input id="login-username" v-model="loginUsername" autocomplete="username" required>
+        <label for="login-password">Password</label>
+        <input id="login-password" v-model="loginPassword" type="password" autocomplete="current-password" required>
+        <p v-if="loginError" class="login-error">{{ loginError }}</p>
+        <button :disabled="loginLoading" type="submit">{{ loginLoading ? 'Signing in…' : 'Sign in' }}</button>
+      </form>
+    </section>
+  </main>
   <main class="shell">
     <header>
-      <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
+      <div class="app-header-top"><p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p><button class="sign-out" @click="signOut">Sign out · {{ authenticatedUser }}</button></div>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
       <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button><button :class="{ active: view === 'changes' }" @click="showPortfolioChanges">Portfolio changes</button><button :class="{ active: view === 'drivers' }" @click="showNavDrivers">NAV movement analysis</button></div>
     </header>
@@ -1954,14 +2010,8 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <div class="holdings-heading"><div><p class="eyebrow">Portfolio disclosure</p><h3>{{ debtPortfolioStats ? 'Holdings & credit quality' : 'Holdings & sector allocation' }}</h3></div><p v-if="holdingPortfolio">{{ holdingPortfolio.as_of_date }}<small>{{ holdingPortfolio.amc }} monthly disclosure</small></p></div>
         <p v-if="holdingsLoading" class="holdings-message">Loading raw monthly holdings…</p>
         <template v-else>
-          <div v-if="debtPortfolioStats" class="debt-portfolio-summary">
-            <div><span>Weighted holding yield</span><strong>{{ debtPortfolioStats.weightedYield === null ? '—' : `${(debtPortfolioStats.weightedYield * 100).toFixed(2)}%` }}</strong><small>{{ debtPortfolioStats.weightedYield === null ? 'Yield is not disclosed at holding level' : `${(debtPortfolioStats.yieldCoverage * 100).toFixed(0)}% of portfolio has a disclosed yield` }}</small></div>
-            <div><span>Weighted residual maturity</span><strong>{{ debtPortfolioStats.weightedResidualMaturity === null ? '—' : `${debtPortfolioStats.weightedResidualMaturity.toFixed(1)} years` }}</strong><small>Calculated from disclosed maturity dates</small></div>
-            <div><span>Rated exposure</span><strong>{{ `${(debtPortfolioStats.ratedWeight * 100).toFixed(1)}%` }}</strong><small>Positions with a recognised credit rating</small></div>
-          </div>
-          <p v-if="debtPortfolioStats && (debtPortfolioStats.reportedNetWeight < 0.75 || debtPortfolioStats.reportedNetWeight > 1.25)" class="holdings-note">Source coverage check: the disclosed positions currently reconcile to {{ (debtPortfolioStats.reportedNetWeight * 100).toFixed(1) }}% of NAV. Treat allocation totals as partial until the AMC source provides a fully reconciling snapshot.</p>
           <div class="holdings-grid">
-            <div><h4>Top holdings</h4><div class="holdings-list"><div v-for="holding in topHoldings" :key="`${holding.isin}-${holding.instrument_name}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.industry_or_rating || holding.asset_class || 'Portfolio holding' }}</small></span><b>{{ (holding.weight * 100).toFixed(2) }}%</b></div></div></div>
+            <div><h4>Top 10 holdings</h4><div class="holdings-list"><div v-for="holding in topHoldings" :key="`${holding.isin}-${holding.instrument_name}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.industry_or_rating || holding.asset_class || 'Portfolio holding' }}</small></span><b>{{ (holding.weight * 100).toFixed(2) }}%</b></div></div></div>
             <div v-if="debtPortfolioStats"><h4>Credit-quality allocation</h4><div class="holdings-list"><div v-for="rating in debtPortfolioStats.ratings" :key="rating.name"><span><strong>{{ rating.name }}</strong><small>Portfolio exposure</small></span><b>{{ (rating.weight * 100).toFixed(2) }}%</b></div><p v-if="!debtPortfolioStats.ratings.length" class="holdings-message">No recognised credit ratings in this disclosure.</p></div></div>
             <div v-else><h4>Top sectors</h4><div class="holdings-list"><div v-for="sector in sectorAllocation" :key="sector.name"><span><strong>{{ sector.name }}</strong><small>Equity allocation</small></span><b>{{ (sector.weight * 100).toFixed(2) }}%</b></div><p v-if="!sectorAllocation.length" class="holdings-message">Sector allocation is available for equity holdings only.</p></div></div>
           </div>

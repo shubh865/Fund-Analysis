@@ -41,6 +41,7 @@
     "refresh:franklin-factsheets": "node scripts/refresh-franklin-factsheets.js",
     "refresh:dsp-factsheets": "node scripts/refresh-dsp-factsheets.js",
     "refresh:quant-factsheets": "node scripts/refresh-quant-factsheets.js",
+    "refresh:icici-factsheets": "node scripts/refresh-icici-factsheets.js",
     "refresh:all-factsheets": "node scripts/refresh-all-factsheets.js",
     "import:icici-holdings": "node scripts/import-icici-holdings.js",
     "map:icici-portfolios": "node scripts/map-icici-portfolios.js",
@@ -104,6 +105,7 @@
     "map:amfi-ter": "node scripts/map-amfi-ter.js",
     "map:amfi-aaum": "node scripts/map-amfi-aaum.js",
     "map:amfi-total-aum": "node scripts/map-amfi-total-aum.js",
+    "audit:data-coverage": "node scripts/audit-data-coverage.js",
     "verify:sqlite": "node scripts/verify-node-sqlite.js"
   },
   "dependencies": {
