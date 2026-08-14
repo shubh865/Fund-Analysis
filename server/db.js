@@ -326,6 +326,37 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_nse_index_close_daily_date
     ON nse_index_close_daily(date);
+
+  -- Local internal-access accounts. Public registration creates a pending
+  -- account only; only the seeded Super Admin can approve a user.
+  CREATE TABLE IF NOT EXISTS app_users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    full_name TEXT NOT NULL,
+    email TEXT,
+    password_salt TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    request_status_token TEXT UNIQUE,
+    role TEXT NOT NULL CHECK(role IN ('super_admin', 'user')) DEFAULT 'user',
+    status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected', 'suspended')) DEFAULT 'pending',
+    requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    approved_at TEXT,
+    approved_by_user_id INTEGER REFERENCES app_users(user_id),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_app_users_status ON app_users(status);
+
+  -- Basic internal product-usage audit.  Deliberately excludes passwords,
+  -- search terms, selected schemes, and network-address data.
+  CREATE TABLE IF NOT EXISTS app_usage_events (
+    event_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES app_users(user_id),
+    event_type TEXT NOT NULL CHECK(event_type IN ('login', 'logout', 'page_view')),
+    event_value TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_app_usage_events_created_at ON app_usage_events(created_at);
+  CREATE INDEX IF NOT EXISTS idx_app_usage_events_user_id ON app_usage_events(user_id);
 `);
 
 const debtQuantColumns = db.prepare('PRAGMA table_info(scheme_debt_quant_snapshots)').all().map((column) => column.name);
@@ -339,6 +370,10 @@ const totalAumColumns = db.prepare('PRAGMA table_info(scheme_total_aum_daily)').
 if (!totalAumColumns.includes('riskometer_scheme')) db.exec('ALTER TABLE scheme_total_aum_daily ADD COLUMN riskometer_scheme TEXT');
 if (!totalAumColumns.includes('riskometer_benchmark')) db.exec('ALTER TABLE scheme_total_aum_daily ADD COLUMN riskometer_benchmark TEXT');
 if (!totalAumColumns.includes('benchmark_name')) db.exec('ALTER TABLE scheme_total_aum_daily ADD COLUMN benchmark_name TEXT');
+
+const appUserColumns = db.prepare('PRAGMA table_info(app_users)').all().map((column) => column.name);
+if (!appUserColumns.includes('request_status_token')) db.exec('ALTER TABLE app_users ADD COLUMN request_status_token TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_request_status_token ON app_users(request_status_token)');
 
 // AMFI added NSDL scheme codes to its newer TER format.  Older official TER
 // records do not have them, so migrate the original table to a source-key

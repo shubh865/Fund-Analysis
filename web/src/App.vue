@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import * as XLSX from 'xlsx';
 
 const search = ref('');
 const schemes = ref([]);
@@ -55,6 +56,7 @@ const peerPlan = ref('direct');
 const peerRows = ref([]);
 const peerBenchmark = ref(null);
 const peerBenchmarkMismatchCount = ref(0);
+const peerExcludedSchemes = ref([]);
 const peerBenchmarkHistoryAvailable = ref(false);
 const peerLoading = ref(false);
 const peerSort = ref({ key: 'alpha', direction: 'desc' });
@@ -77,17 +79,113 @@ const marketSectorPulse = ref(null);
 const marketSectorNews = ref(null);
 const authReady = ref(false);
 const authenticatedUser = ref('');
+const authenticatedRole = ref('');
+const authMode = ref('sign-in');
 const loginUsername = ref('');
 const loginPassword = ref('');
 const loginError = ref('');
 const loginLoading = ref(false);
+const requestFullName = ref('');
+const requestUsername = ref('');
+const requestEmail = ref('');
+const requestPassword = ref('');
+const requestError = ref('');
+const requestMessage = ref('');
+const requestLoading = ref(false);
+const accessStatus = ref(null);
+const adminUsers = ref([]);
+const adminLoading = ref(false);
+const adminError = ref('');
+const usageSearch = ref('');
+const adminUsage = ref({ days: 30, totals: { events: 0, active_users: 0, logins: 0 }, daily: [], events: { login: [], logout: [], page_view: [] } });
 let searchTimer;
+
+function excelFileName(label) {
+  return `${String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'fund-analysis'}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+}
+
+function downloadWorkbook(label, sheets) {
+  const workbook = XLSX.utils.book_new();
+  for (const [sheetName, rows] of sheets) {
+    if (!rows?.length) continue;
+    const worksheet = Array.isArray(rows[0]) ? XLSX.utils.aoa_to_sheet(rows) : XLSX.utils.json_to_sheet(rows);
+    worksheet['!cols'] = Object.keys(rows[0]).map(() => ({ wch: 22 }));
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName.slice(0, 31));
+  }
+  XLSX.writeFile(workbook, excelFileName(label));
+}
+
+function downloadQuartiles() {
+  const rows = quartileTables.value.flatMap((table) => table.rows.map((entry) => ({
+    Quartile: table.label, Fund: entry.name, 'Direct Growth Return %': entry.direct?.value ?? null,
+    'Regular Growth Return %': entry.regular?.value ?? null, 'Direct Scheme Code': entry.direct?.scheme_code ?? '',
+    'Regular Scheme Code': entry.regular?.scheme_code ?? '',
+  })));
+  downloadWorkbook('quartiles', [
+    ['Read me', [['Category', quartileMainCategory.value], ['Subcategory', quartileCategory.value], ['As of month', quartileAsOf.value], ['Period', `${quartileYears.value}Y${quartileYears.value > 1 ? ' CAGR' : ''}`], ['Return basis', quartileReturnMode.value === 'gross' ? 'Gross before TER (estimated)' : 'Net return from NAV']]],
+    ['Quartiles', rows],
+  ]);
+}
+
+function downloadPeerCategory() {
+  const rows = visiblePeerRows.value.map((row) => ({ Fund: row.name, AMC: row.amc, 'Fund average return %': row.metrics[peerPeriod.value].averageFund, 'Benchmark average return %': row.metrics[peerPeriod.value].averageBenchmark, 'Alpha %': row.metrics[peerPeriod.value].alpha, 'Consistency %': row.metrics[peerPeriod.value].consistency, 'Rolling windows': row.metrics[peerPeriod.value].observations }));
+  const excluded = peerExcludedSchemes.value.map((row) => ({ Fund: row.name, AMC: row.amc, 'Reported benchmark': row.reported_benchmark_name, Reason: 'Different reported benchmark from category comparison' }));
+  downloadWorkbook('category-peers', [['Read me', [['Category', peerMainCategory.value], ['Subcategory', peerCategory.value], ['Plan', peerPlan.value], ['Holding period', `${peerPeriod.value}Y`], ['Category benchmark', peerBenchmark.value?.name || '']]], ['Eligible peers', rows], ['Not compared', excluded]]);
+}
+
+function downloadSelectedComparison() {
+  const metrics = compareRows.value.map((row) => ({ Fund: row.scheme.name, AMC: row.scheme.amc, Category: row.scheme.category, NAV: row.latestNav, 'Total AUM crore': row.scheme.total_aum_crore, '1Y return %': row.returns.oneYear, '3Y CAGR %': row.returns.threeYear, '5Y CAGR %': row.returns.fiveYear, '1Y alpha %': row.benchmarkOutperformance.oneYear, '3Y alpha %': row.benchmarkOutperformance.threeYear, '5Y alpha %': row.benchmarkOutperformance.fiveYear }));
+  const chart = compareChart.value;
+  const historyRows = chart ? chart.dates.flatMap((date, index) => chart.series.map((series) => ({ Date: date, Fund: series.name, 'Rebased growth index': series.values[index] }))) : [];
+  downloadWorkbook('selected-fund-comparison', [['Comparison', metrics], ['Rebased NAV history', historyRows]]);
+}
+
+function downloadOverlap() {
+  if (!portfolioOverlap.value) return;
+  const data = portfolioOverlap.value;
+  downloadWorkbook('portfolio-overlap', [['Summary', [{ 'First fund': data.left.scheme.name, 'Second fund': data.right.scheme.name, 'Common holdings overlap %': data.sharedWeight * 100, 'Common sector overlap %': data.sharedSectorWeight * 100, 'First fund top-10 concentration %': data.leftTopTen * 100, 'Second fund top-10 concentration %': data.rightTopTen * 100 }]], ['Common holdings', data.commonHoldings.map((row) => ({ Holding: row.name, ISIN: row.isin, 'First fund weight %': row.leftWeight * 100, 'Second fund weight %': row.rightWeight * 100, 'Common weight %': row.commonWeight * 100 }))], ['First fund top 10', data.leftTopHoldings.map((row) => ({ Holding: row.instrument_name, ISIN: row.isin, 'Weight %': row.weight * 100 }))], ['Second fund top 10', data.rightTopHoldings.map((row) => ({ Holding: row.instrument_name, ISIN: row.isin, 'Weight %': row.weight * 100 }))]]);
+}
+
+function downloadPortfolioChanges() {
+  if (!portfolioChanges.value || !portfolioChangeScheme.value) return;
+  const data = portfolioChanges.value;
+  const holdingRows = (items, changeLabel) => items.map((row) => ({ Holding: row.instrument_name, ISIN: row.isin, Type: holdingType(row).label, 'Previous weight %': row.previousWeight == null ? 0 : row.previousWeight * 100, 'Current weight %': row.weight * 100, 'Change pp': row.change * 100, Change: changeLabel }));
+  downloadWorkbook('portfolio-changes', [['Read me', [['Fund', portfolioChangeScheme.value.scheme.name], ['Current disclosure', data.currentDate], ['Previous disclosure', data.previousDate]]], ['Added', holdingRows(data.additions, 'Added')], ['Exited', holdingRows(data.exits, 'Exited')], ['Weight changes', holdingRows([...data.increases, ...data.reductions], 'Weight change')], ['Sector shifts', data.sectorChanges.map((row) => ({ Sector: row.name, 'Previous weight %': row.previousWeight * 100, 'Current weight %': row.currentWeight * 100, 'Change pp': row.change * 100 }))]]);
+}
+
+function downloadNavDrivers() {
+  if (!navDrivers.value) return;
+  const data = navDrivers.value;
+  const rows = [...data.positive, ...data.negative].map((row) => ({ Holding: row.instrument_name, Symbol: row.symbol || '', ISIN: row.isin, 'Portfolio weight %': row.weight * 100, 'Previous close': row.previous_close_price, Close: row.close_price, 'Stock return %': row.stockReturn, 'Estimated NAV impact pp': row.contribution }));
+  downloadWorkbook('nav-movement-analysis', [['Read me', [['Fund', data.scheme.name], ['NAV date', data.date], ['Actual NAV move %', data.actual], ['Estimated holdings move %', data.estimated], ['Residual %', data.residual], ['Note', 'Estimate based on latest disclosed holdings and official NSE closing prices; not AMC attribution.']]], ['Priced drivers', rows]]);
+}
+
+function downloadUsageLogs() {
+  const rows = Object.entries(adminUsage.value.events).flatMap(([type, events]) => events.map((event) => ({ Event: type, Name: event.full_name, Username: event.username, Email: event.email || '', Detail: event.event_value || '', 'Recorded at': event.created_at })));
+  downloadWorkbook('usage-log', [['Read me', [['Period', `Last ${adminUsage.value.days} days`], ['Note', 'Super Admin activity is excluded. No searches, passwords, scheme selections, or IP addresses are recorded.']]], ['Usage events', rows]]);
+}
+
+function downloadSchemeDetail() {
+  if (!selected.value) return;
+  downloadWorkbook('scheme-detail', [['Scheme snapshot', [{ Fund: selected.value.name, AMC: selected.value.amc, Category: selected.value.category, 'Latest NAV': history.value.at(-1)?.nav ?? null, 'Latest NAV date': history.value.at(-1)?.date ?? null, Benchmark: selected.value.benchmark_name || '', 'Portfolio disclosure date': holdingPortfolio.value?.as_of_date || '' }]]]);
+}
 
 async function checkSession() {
   const response = await fetch('/api/auth/session');
   const payload = await response.json();
   authenticatedUser.value = payload.authenticated ? payload.username : '';
+  authenticatedRole.value = payload.authenticated ? payload.role : '';
   authReady.value = true;
+}
+
+async function checkAccessStatus() {
+  try {
+    const response = await fetch('/api/auth/access-status');
+    const payload = await response.json();
+    accessStatus.value = payload.status ? payload : null;
+  } catch {
+    accessStatus.value = null;
+  }
 }
 
 async function signIn() {
@@ -101,8 +199,10 @@ async function signIn() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || 'Could not sign in.');
     authenticatedUser.value = payload.username;
+    authenticatedRole.value = payload.role;
     loginPassword.value = '';
     await Promise.all([loadSchemes(), loadCategories()]);
+    trackUsage('schemes');
   } catch (requestError) {
     loginError.value = requestError.message;
   } finally {
@@ -110,9 +210,89 @@ async function signIn() {
   }
 }
 
+async function trackUsage(section) {
+  if (!authenticatedUser.value) return;
+  try {
+    await fetch('/api/usage/page-view', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ section }),
+    });
+  } catch {
+    // Usage logging must never block the research workspace.
+  }
+}
+
+async function requestAccess() {
+  requestLoading.value = true;
+  requestError.value = '';
+  requestMessage.value = '';
+  try {
+    const response = await fetch('/api/auth/request-access', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fullName: requestFullName.value, username: requestUsername.value, email: requestEmail.value, password: requestPassword.value }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not submit your access request.');
+    requestMessage.value = payload.message;
+    requestPassword.value = '';
+    accessStatus.value = { status: payload.status, username: payload.username, fullName: requestFullName.value };
+    authMode.value = 'sign-in';
+  } catch (requestFailure) {
+    requestError.value = requestFailure.message;
+  } finally {
+    requestLoading.value = false;
+  }
+}
+
+async function loadAdminUsers() {
+  if (authenticatedRole.value !== 'super_admin') return;
+  adminLoading.value = true;
+  adminError.value = '';
+  try {
+    const response = await fetch('/api/admin/users');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not load access requests.');
+    adminUsers.value = payload.users;
+  } catch (requestFailure) {
+    adminError.value = requestFailure.message;
+  } finally {
+    adminLoading.value = false;
+  }
+}
+
+async function loadAdminUsage() {
+  if (authenticatedRole.value !== 'super_admin') return;
+  try {
+    const response = await fetch(`/api/admin/usage?days=30&q=${encodeURIComponent(usageSearch.value)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not load usage activity.');
+    adminUsage.value = payload;
+  } catch (requestFailure) {
+    adminError.value = requestFailure.message;
+  }
+}
+
+async function updateUserAccess(userId, action) {
+  adminError.value = '';
+  try {
+    const response = await fetch(`/api/admin/users/${userId}/${action}`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not update this account.');
+    await loadAdminUsers();
+  } catch (requestFailure) {
+    adminError.value = requestFailure.message;
+  }
+}
+
+function showAdminPanel() {
+  closeDetail();
+  view.value = 'admin';
+  Promise.all([loadAdminUsers(), loadAdminUsage()]);
+}
+
 async function signOut() {
   await fetch('/api/auth/logout', { method: 'POST' });
   authenticatedUser.value = '';
+  authenticatedRole.value = '';
   selected.value = null;
 }
 
@@ -225,6 +405,7 @@ function selectPeerMainCategory() {
   peerRows.value = [];
   peerBenchmark.value = null;
   peerBenchmarkMismatchCount.value = 0;
+  peerExcludedSchemes.value = [];
   peerBenchmarkHistoryAvailable.value = false;
 }
 
@@ -522,6 +703,7 @@ async function loadPeerAnalysis() {
     const payload = await response.json();
     peerBenchmark.value = payload.benchmark;
     peerBenchmarkMismatchCount.value = payload.benchmark_mismatch_count || 0;
+    peerExcludedSchemes.value = payload.excluded_schemes || [];
     peerBenchmarkHistoryAvailable.value = Boolean(payload.benchmark_history?.length);
     // Yield once so the loading state is visible before the browser performs
     // the deliberately frontend-only rolling calculations.
@@ -538,6 +720,7 @@ async function loadPeerAnalysis() {
     peerInspectedScheme.value = '';
     peerBenchmark.value = null;
     peerBenchmarkMismatchCount.value = 0;
+    peerExcludedSchemes.value = [];
     peerBenchmarkHistoryAvailable.value = false;
   } finally {
     peerLoading.value = false;
@@ -1295,6 +1478,17 @@ function holdingByIsin(rows) {
   return mapped;
 }
 
+function holdingType(holding) {
+  const assetClass = String(holding?.asset_class || '').toLowerCase();
+  const descriptor = `${holding?.holding_group || ''} ${holding?.instrument_name || ''} ${holding?.industry_or_rating || ''}`.toLowerCase();
+  if (assetClass.includes('equity') || assetClass.includes('share')) return { label: 'Equity', className: 'equity' };
+  if (assetClass.includes('debt') || /\b(bond|debenture|government securit|g-sec|treasury bill|commercial paper|certificate of deposit|floating rate|frn|securiti[sz]ed debt)\b/.test(descriptor)) return { label: 'Debt', className: 'debt' };
+  if (assetClass.includes('money market') || /\b(treps|repo|reverse repo|cash|money market)\b/.test(descriptor)) return { label: 'Cash / money market', className: 'cash' };
+  // Some AMC files omit asset_class on individual equity rows but supply a sector.
+  if (holding?.industry_or_rating && !/\b(aaa|aa\+?|a\+?|a1\+?|p1\+?|sov|unrated)\b/i.test(String(holding.industry_or_rating))) return { label: 'Equity', className: 'equity' };
+  return { label: 'Other', className: 'other' };
+}
+
 function allocationBySector(rows) {
   const allocations = new Map();
   for (const holding of overlapHoldings(rows)) {
@@ -1400,8 +1594,8 @@ const portfolioChanges = computed(() => {
     previousDate: previous.as_of_date,
     newHoldingCount: additions.length,
     exitedHoldingCount: exits.length,
-    additions: additions.sort((left, right) => right.weight - left.weight).slice(0, 5),
-    exits: exits.sort((left, right) => right.weight - left.weight).slice(0, 5),
+    additions: additions.sort((left, right) => right.weight - left.weight),
+    exits: exits.sort((left, right) => right.weight - left.weight),
     increases: increases.sort((left, right) => right.change - left.change).slice(0, 5),
     reductions: reductions.sort((left, right) => left.change - right.change).slice(0, 5),
     sectorChanges,
@@ -1734,10 +1928,14 @@ function closeDetail() {
 }
 
 onMounted(async () => {
-  await checkSession();
-  if (authenticatedUser.value) await Promise.all([loadSchemes(), loadCategories()]);
+  await Promise.all([checkSession(), checkAccessStatus()]);
+  if (authenticatedUser.value) {
+    await Promise.all([loadSchemes(), loadCategories()]);
+    trackUsage('schemes');
+  }
 });
 onBeforeUnmount(() => clearTimeout(searchTimer));
+watch(view, (section) => trackUsage(section));
 </script>
 
 <template>
@@ -1745,8 +1943,10 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
   <main v-else-if="!authenticatedUser" class="login-shell">
     <section class="login-card" aria-label="Sign in">
       <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
-      <h1>Internal<br><em>access.</em></h1>
+      <template v-if="authMode === 'sign-in'">
+      <h1>From NAV<br><em>to Insights.</em></h1>
       <p>Sign in to open the research workspace.</p>
+      <p v-if="accessStatus" :class="['access-status', accessStatus.status]"><template v-if="accessStatus.status === 'pending'">Your sign-up as <strong>@{{ accessStatus.username }}</strong> is pending Super Admin approval.</template><template v-else-if="accessStatus.status === 'approved'">Your access is approved. Sign in using <strong>@{{ accessStatus.username }}</strong>.</template><template v-else>Your access request is currently {{ accessStatus.status }}. Contact the Super Admin if you need help.</template></p>
       <form @submit.prevent="signIn">
         <label for="login-username">Username</label>
         <input id="login-username" v-model="loginUsername" autocomplete="username" required>
@@ -1755,16 +1955,44 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <p v-if="loginError" class="login-error">{{ loginError }}</p>
         <button :disabled="loginLoading" type="submit">{{ loginLoading ? 'Signing in…' : 'Sign in' }}</button>
       </form>
+      <button class="text-button" type="button" @click="authMode = 'request'; loginError = ''">New here? Sign up</button>
+      </template>
+      <template v-else>
+      <h1>Create your<br><em>account.</em></h1>
+      <p>After sign-up, your account stays pending until the Super Admin approves it.</p>
+      <form @submit.prevent="requestAccess">
+        <label for="request-full-name">Full name</label>
+        <input id="request-full-name" v-model="requestFullName" autocomplete="name" required>
+        <label for="request-username">Username</label>
+        <input id="request-username" v-model="requestUsername" autocomplete="username" required>
+        <label for="request-email">Office email <small>(optional)</small></label>
+        <input id="request-email" v-model="requestEmail" type="email" autocomplete="email">
+        <label for="request-password">Choose password</label>
+        <input id="request-password" v-model="requestPassword" type="password" autocomplete="new-password" minlength="10" required>
+        <p v-if="requestError" class="login-error">{{ requestError }}</p>
+        <p v-if="requestMessage" class="login-success">{{ requestMessage }}</p>
+        <button :disabled="requestLoading" type="submit">{{ requestLoading ? 'Creating...' : 'Sign up' }}</button>
+      </form>
+      <button class="text-button" type="button" @click="authMode = 'sign-in'; requestError = ''; requestMessage = ''">Back to sign in</button>
+      </template>
     </section>
   </main>
-  <main class="shell">
+  <main v-if="authenticatedUser" class="shell">
     <header>
-      <div class="app-header-top"><p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p><button class="sign-out" @click="signOut">Sign out · {{ authenticatedUser }}</button></div>
+      <div class="app-header-top"><p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p><div class="header-actions"><button v-if="authenticatedRole === 'super_admin'" class="sign-out" @click="showAdminPanel">Admin</button><button class="sign-out" @click="signOut">Sign out · {{ authenticatedUser }}</button></div></div>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
       <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button><button :class="{ active: view === 'changes' }" @click="showPortfolioChanges">Portfolio changes</button><button :class="{ active: view === 'drivers' }" @click="showNavDrivers">NAV movement analysis</button></div>
     </header>
 
-    <section v-if="view === 'quartiles' && !selected" class="card category-browser quartile-browser" aria-label="Category quartiles">
+    <section v-if="view === 'admin' && authenticatedRole === 'super_admin'" class="card admin-panel" aria-label="Access control">
+      <div class="compare-intro"><div><p class="eyebrow">Super Admin</p><h2>Access control</h2><p>New accounts stay pending until you approve them. You can suspend approved accounts at any time.</p></div><button :disabled="adminLoading" @click="Promise.all([loadAdminUsers(), loadAdminUsage()])">{{ adminLoading ? 'Refreshing...' : 'Refresh' }}</button></div>
+      <p v-if="adminError" class="message error">{{ adminError }}</p>
+      <p v-else-if="adminLoading" class="message">Loading access requests...</p>
+      <div v-else class="admin-user-list"><article v-for="user in adminUsers" :key="user.user_id"><div><span :class="`user-status ${user.status}`">{{ user.status }}</span><strong>{{ user.full_name }}</strong><small>@{{ user.username }}<template v-if="user.email"> · {{ user.email }}</template> · requested {{ user.requested_at }}</small></div><div class="admin-user-actions"><small v-if="user.role === 'super_admin'">Super Admin</small><template v-else-if="user.status === 'pending'"><button @click="updateUserAccess(user.user_id, 'approve')">Approve</button><button class="secondary-action" @click="updateUserAccess(user.user_id, 'reject')">Reject</button></template><template v-else-if="user.status === 'approved'"><button class="secondary-action" @click="updateUserAccess(user.user_id, 'suspend')">Suspend</button></template></div></article><p v-if="!adminUsers.length" class="message">No access requests yet.</p></div>
+      <section class="usage-summary" aria-label="Basic usage log"><div class="change-heading"><div><p class="eyebrow">Usage log</p><h3>Last {{ adminUsage.days }} days</h3></div><p>Basic internal activity<small>No searches, scheme selections, passwords, or IP addresses stored</small></p></div><div class="usage-search"><input v-model="usageSearch" @keyup.enter="loadAdminUsage" placeholder="Search a user by name, username, or email"><button @click="loadAdminUsage">Search</button></div><div class="usage-metrics"><div><span>Active users</span><strong>{{ adminUsage.totals.active_users }}</strong><small>Logged in or opened a section</small></div><div><span>Logins</span><strong>{{ adminUsage.totals.logins }}</strong><small>Successful sign-ins</small></div><div><span>Recorded events</span><strong>{{ adminUsage.totals.events }}</strong><small>Login, logout, or section visit</small></div></div><div class="usage-event-grid"><section v-for="group in [{ key: 'login', label: 'Sign-ins', empty: 'No successful sign-ins.' }, { key: 'logout', label: 'Sign-outs', empty: 'No sign-outs recorded.' }, { key: 'page_view', label: 'Sections opened', empty: 'No section visits recorded.' }]" :key="group.key"><h4>{{ group.label }} <small>{{ adminUsage.events[group.key].length }}</small></h4><div class="usage-list"><div v-for="event in adminUsage.events[group.key]" :key="`${event.created_at}-${event.username}-${event.event_value || ''}`"><span><strong>{{ event.full_name }}</strong><small>@{{ event.username }}</small></span><span><strong>{{ event.event_value ? `Opened ${event.event_value}` : group.label.slice(0, -1) }}</strong><small>{{ event.created_at }}</small></span></div><p v-if="!adminUsage.events[group.key].length" class="message">{{ group.empty }}</p></div></section></div></section>
+    </section>
+
+    <section v-else-if="view === 'quartiles' && !selected" class="card category-browser quartile-browser" aria-label="Category quartiles">
       <div class="category-controls">
         <label for="quartile-main-category">Category</label>
         <select id="quartile-main-category" v-model="quartileMainCategory" @change="selectQuartileMainCategory"><option value="">Select a category</option><option v-for="category in quartileMainCategories" :key="category" :value="category">{{ category }}</option></select>
@@ -1779,6 +2007,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <p v-else-if="!quartileCategory" class="message">Choose a category and subcategory to split paired Growth plans into performance quartiles.</p>
       <p v-else-if="quartileLoading" class="message">Loading raw NAV observations…</p>
       <template v-else>
+        <button v-if="quartileTables.some((table) => table.rows.length)" class="download-button section-download" @click="downloadQuartiles">Download Excel</button>
         <p class="quartile-note"><template v-if="quartileReturnMode === 'net'">Net return is the investor return calculated directly from published NAV.</template><template v-else>Gross before TER is an estimate reconstructed by adding each plan's applicable daily expense drag back to NAV performance. {{ quartileGrossCoverage.covered }} of {{ quartileGrossCoverage.eligible }} eligible plan records have complete, unambiguous TER coverage; the rest are excluded.</template> All eligible AMCs are ranked and the best 20 representatives are displayed. Q1 holds the top 25% of the displayed set by Direct Growth return where available; Regular Growth is used only when a Direct plan does not exist.</p>
         <div class="quartile-grid">
           <section v-for="table in quartileTables" :key="table.label" class="quartile-table" :aria-label="`${table.label} ${table.subtitle}`">
@@ -1798,6 +2027,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <p v-if="error" class="message error">{{ error }}</p>
       <div v-if="compareResults.length" class="compare-results"><button v-for="scheme in compareResults" :key="scheme.scheme_code" :disabled="compareSelection.some((item) => item.scheme.scheme_code === scheme.scheme_code) || compareSelection.length >= 5" @click="addToComparison(scheme)"><span><strong>{{ scheme.name }}</strong><small>{{ scheme.amc }} · {{ scheme.category || 'Category not supplied' }}</small></span><span>+ Add</span></button></div>
       <p v-else-if="!compareSelection.length" class="message">Search for the first scheme you would like to compare.</p>
+      <button v-if="compareRows.length" class="download-button section-download" @click="downloadSelectedComparison">Download Excel</button>
       <section v-if="compareChart" class="chart-section compare-chart-section" aria-label="Selected-fund NAV growth chart">
         <div class="chart-header"><div><p class="eyebrow">NAV comparison</p><h3>Selected funds growth</h3><p class="chart-caption">All selected funds rebased to 100 on {{ compareChart.startDate }}</p></div><div><div class="range-controls"><button v-for="range in Object.keys(ranges)" :key="range" :class="{ active: compareChartRange === range }" @click="setCompareChartRange(range)">{{ range }}</button></div><div class="chart-legend compare-chart-legend"><span v-for="series in compareChart.series" :key="series.schemeCode"><i :style="{ background: series.color }"></i>{{ series.name }}</span></div></div></div>
         <div class="chart-wrap compare-chart-wrap"><svg class="nav-chart" :viewBox="`0 0 ${compareChart.width} ${compareChart.height}`" role="img" :aria-label="`Selected fund growth from ${compareChart.startDate} to ${compareChart.endDate}`" @pointermove="updateCompareChartHover" @pointerdown="updateCompareChartHover" @pointerleave="compareChartHover = null"><line v-for="fraction in [0, 0.5, 1]" :key="fraction" class="grid-line" :x1="compareChart.padding.left" :x2="compareChart.width - compareChart.padding.right" :y1="compareChart.padding.top + fraction * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" :y2="compareChart.padding.top + fraction * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" /><text class="axis-label" :x="compareChart.padding.left - 8" :y="compareChart.padding.top + 4" text-anchor="end">{{ compareChart.max.toFixed(1) }}</text><text class="axis-label" :x="compareChart.padding.left - 8" :y="compareChart.height - compareChart.padding.bottom + 4" text-anchor="end">{{ compareChart.min.toFixed(1) }}</text><polyline v-for="series in compareChart.series" :key="series.schemeCode" class="compare-series-line" :style="{ stroke: series.color }" :points="series.polyline" fill="none" /><line v-if="compareChartHoverDetails" class="compare-hover-guide" :x1="compareChartHoverDetails.x" :x2="compareChartHoverDetails.x" :y1="compareChart.padding.top" :y2="compareChart.height - compareChart.padding.bottom" /><circle v-for="series in compareChart.series" :key="`${series.schemeCode}-end`" class="compare-series-endpoint" :style="{ fill: series.color }" :cx="compareChart.width - compareChart.padding.right" :cy="series.endY" r="3.5" /><circle v-for="series in compareChartHoverDetails?.series || []" :key="`${series.schemeCode}-hover`" class="compare-hover-point" :style="{ fill: series.color }" :cx="compareChartHoverDetails.x" :cy="compareChart.padding.top + ((compareChart.max - series.value) / (compareChart.max - compareChart.min || Math.max(compareChart.max * 0.02, 1))) * (compareChart.height - compareChart.padding.top - compareChart.padding.bottom)" r="4" /><text class="axis-label" :x="compareChart.padding.left" :y="compareChart.height - 7">{{ compareChart.startDate }}</text><text class="axis-label" :x="compareChart.width - compareChart.padding.right" :y="compareChart.height - 7" text-anchor="end">{{ compareChart.endDate }}</text></svg><aside v-if="compareChartHoverDetails" class="compare-chart-tooltip" :style="{ left: `${compareChartHoverDetails.left}%` }"><strong>{{ compareChartHoverDetails.date }}</strong><div v-for="series in compareChartHoverDetails.series" :key="series.schemeCode"><span><i :style="{ background: series.color }"></i>{{ series.name }}</span><b>{{ series.value.toFixed(2) }} <small>{{ series.returnSinceStart >= 0 ? '+' : '' }}{{ series.returnSinceStart.toFixed(2) }}%</small></b></div></aside></div>
@@ -1815,7 +2045,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <div><label for="peer-plan">Plans</label><select id="peer-plan" v-model="peerPlan" :disabled="!peerCategory" @change="loadPeerAnalysis"><option value="direct">Direct Growth</option><option value="regular">Regular Growth</option><option value="all-growth">All Growth plans</option></select></div>
       </div>
       <div class="peer-period"><span>Holding period</span><div class="period-buttons"><button v-for="years in [1, 2, 3, 4, 5]" :key="years" type="button" :class="{ active: peerPeriod === years }" :disabled="!peerRows.length" @click="setPeerPeriod(years)">{{ years }}Y</button></div></div>
-      <p v-if="peerBenchmark" class="peer-benchmark">Benchmark: <strong>{{ peerBenchmark.name }}</strong><small>{{ peerBenchmark.mapping_status }} category mapping · calculated in your browser from raw NAV and TRI observations<template v-if="peerBenchmarkMismatchCount"> · {{ peerBenchmarkMismatchCount }} selected-plan records excluded because AMFI reports a different benchmark</template></small></p>
+      <p v-if="peerBenchmark" class="peer-benchmark">Benchmark: <strong>{{ peerBenchmark.name }}</strong><small>{{ peerBenchmark.mapping_status }} category mapping · calculated in your browser from raw NAV and TRI observations<template v-if="peerBenchmarkMismatchCount"> · {{ peerBenchmarkMismatchCount }} selected-plan records are shown separately because AMFI reports a different benchmark</template></small></p>
       <p v-if="!peerCategory" class="message">Choose a category to analyse its peer funds.</p>
       <p v-else-if="peerLoading" class="message">Loading source histories and calculating rolling peer metrics…</p>
       <p v-else-if="!peerBenchmarkHistoryAvailable" class="message">The mapped benchmark's TRI history is not available from an approved source, so alpha and consistency are not calculated.</p>
@@ -1827,6 +2057,11 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <div class="peer-trend-chart-wrap"><svg class="peer-trend-chart" :viewBox="`0 0 ${peerConsistencyTrend.width} ${peerConsistencyTrend.height}`" role="img" :aria-label="`Consistency trend for ${peerConsistencyTrend.name}`"><line v-for="value in [0, 50, 100]" :key="value" class="grid-line" :x1="peerConsistencyTrend.padding.left" :x2="peerConsistencyTrend.width - peerConsistencyTrend.padding.right" :y1="peerConsistencyTrend.padding.top + ((100 - value) / 100) * (peerConsistencyTrend.height - peerConsistencyTrend.padding.top - peerConsistencyTrend.padding.bottom)" :y2="peerConsistencyTrend.padding.top + ((100 - value) / 100) * (peerConsistencyTrend.height - peerConsistencyTrend.padding.top - peerConsistencyTrend.padding.bottom)" /><text v-for="value in [100, 50, 0]" :key="`axis-${value}`" class="axis-label" :x="peerConsistencyTrend.padding.left - 8" :y="peerConsistencyTrend.padding.top + ((100 - value) / 100) * (peerConsistencyTrend.height - peerConsistencyTrend.padding.top - peerConsistencyTrend.padding.bottom) + 4" text-anchor="end">{{ value }}%</text><polyline class="peer-trend-line" :points="peerConsistencyTrend.polyline" fill="none" /><g v-for="point in peerConsistencyTrend.points" :key="point.years"><circle class="peer-trend-point" :cx="point.x" :cy="point.y" r="4" /><text class="peer-trend-value" :x="point.x" :y="point.y - 10" text-anchor="middle">{{ point.metric.consistency.toFixed(1) }}%</text><text class="axis-label" :x="point.x" :y="peerConsistencyTrend.height - 8" text-anchor="middle">{{ point.years }}Y</text></g></svg></div>
         <div class="peer-journey-values"><div v-for="point in peerConsistencyTrend.points" :key="point.years"><span>{{ point.years }}Y consistency</span><strong>{{ point.metric.consistency.toFixed(1) }}%</strong><small>{{ point.metric.observations.toLocaleString() }} rolling windows</small></div></div>
       </section>
+      <section v-if="peerExcludedSchemes.length" class="peer-excluded-section" aria-label="Funds not included in category benchmark comparison">
+        <div><p class="eyebrow">Reference only</p><h3>Not included in benchmark comparison</h3><p>These funds are shown for completeness, but their alpha and consistency are not calculated here because they report a different benchmark from the category comparison.</p></div>
+        <div class="peer-excluded-list"><article v-for="scheme in peerExcludedSchemes" :key="scheme.scheme_code"><strong>{{ scheme.name }}</strong><small>Reports {{ scheme.reported_benchmark_name }} · category comparison uses {{ peerBenchmark?.name }}</small></article></div>
+      </section>
+      <button v-if="visiblePeerRows.length" class="download-button section-download" @click="downloadPeerCategory">Download Excel</button>
       <p v-if="visiblePeerRows.length" class="compare-footnote">Each window uses the same available fund NAV and benchmark TRI dates. Alpha means average fund return minus average benchmark return; consistency is the share of windows where the fund beat the benchmark.</p>
     </section>
 
@@ -1840,6 +2075,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
         <article v-for="entry in overlapSelection" :key="entry.scheme.scheme_code"><div><strong>{{ entry.scheme.name }}</strong><small>{{ entry.portfolio.amc }} · disclosure {{ entry.portfolio.as_of_date }}</small></div><button class="remove-compare" :aria-label="`Remove ${entry.scheme.name}`" @click="removeFromPortfolioOverlap(entry.scheme.scheme_code)">×</button></article>
       </div>
       <template v-if="portfolioOverlap">
+        <button class="download-button section-download" @click="downloadOverlap">Download Excel</button>
         <div class="overlap-metrics">
           <div><span>Common holding overlap</span><strong>{{ (portfolioOverlap.sharedWeight * 100).toFixed(2) }}%</strong><small>Sum of the lower weight for each shared ISIN</small></div>
           <div><span>Common sector overlap</span><strong>{{ (portfolioOverlap.sharedSectorWeight * 100).toFixed(2) }}%</strong><small>Sum of the lower disclosed sector weight</small></div>
@@ -1864,12 +2100,13 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <div v-if="portfolioChangeScheme" class="change-selected"><div><strong>{{ portfolioChangeScheme.scheme.name }}</strong><small>{{ portfolioChangeScheme.portfolio.amc }} monthly portfolio disclosure</small></div><button class="remove-compare" :aria-label="`Clear ${portfolioChangeScheme.scheme.name}`" @click="clearPortfolioChangeScheme">×</button></div>
       <p v-if="portfolioChangeScheme && !portfolioChangeLoading && portfolioChangeSnapshots.length < 2" class="message">Only one verified disclosure is available so far. The tracker will activate automatically after the next monthly portfolio refresh.</p>
       <template v-if="portfolioChanges">
+        <button class="download-button section-download" @click="downloadPortfolioChanges">Download Excel</button>
         <div class="change-heading"><div><p class="eyebrow">Disclosure comparison</p><h3>{{ portfolioChanges.currentDate }} versus {{ portfolioChanges.previousDate }}</h3></div><p>Latest disclosure<small>Compared with the prior available month</small></p></div>
-        <div class="portfolio-change-summary"><div><span>New holdings</span><strong>{{ portfolioChanges.newHoldingCount }}</strong><small>Largest additions shown below</small></div><div><span>Exited holdings</span><strong>{{ portfolioChanges.exitedHoldingCount }}</strong><small>Largest exits shown below</small></div><div><span>Top-10 concentration</span><strong :class="{ positive: portfolioChanges.topTenChange < 0, negative: portfolioChanges.topTenChange > 0 }">{{ portfolioChanges.topTenChange >= 0 ? '+' : '' }}{{ (portfolioChanges.topTenChange * 100).toFixed(2) }} pp</strong><small>Change in the largest ten positions</small></div></div>
+        <div class="portfolio-change-summary"><div><span>New holdings</span><strong>{{ portfolioChanges.newHoldingCount }}</strong><small>All additions shown below</small></div><div><span>Exited holdings</span><strong>{{ portfolioChanges.exitedHoldingCount }}</strong><small>All exits shown below</small></div><div><span>Top-10 concentration</span><strong :class="{ positive: portfolioChanges.topTenChange < 0, negative: portfolioChanges.topTenChange > 0 }">{{ portfolioChanges.topTenChange >= 0 ? '+' : '' }}{{ (portfolioChanges.topTenChange * 100).toFixed(2) }} pp</strong><small>Change in the largest ten positions</small></div></div>
         <div class="portfolio-change-grid">
-          <div><h4>Added</h4><div class="holdings-list"><div v-for="holding in portfolioChanges.additions" :key="`add-${holding.isin}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.isin }}</small></span><b>+{{ (holding.weight * 100).toFixed(2) }}%</b></div><p v-if="!portfolioChanges.additions.length" class="holdings-message">No new ISINs.</p></div></div>
-          <div><h4>Exited</h4><div class="holdings-list"><div v-for="holding in portfolioChanges.exits" :key="`exit-${holding.isin}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.isin }}</small></span><b class="negative">−{{ (holding.weight * 100).toFixed(2) }}%</b></div><p v-if="!portfolioChanges.exits.length" class="holdings-message">No exited ISINs.</p></div></div>
-          <div><h4>Largest weight changes</h4><div class="holdings-list"><div v-for="holding in [...portfolioChanges.increases, ...portfolioChanges.reductions].sort((left, right) => Math.abs(right.change) - Math.abs(left.change)).slice(0, 5)" :key="`move-${holding.isin}`"><span><strong>{{ holding.instrument_name }}</strong><small>{{ holding.previousWeight ? `${(holding.previousWeight * 100).toFixed(2)}% to ${(holding.weight * 100).toFixed(2)}%` : holding.isin }}</small></span><b :class="{ positive: holding.change > 0, negative: holding.change < 0 }">{{ holding.change >= 0 ? '+' : '' }}{{ (holding.change * 100).toFixed(2) }} pp</b></div><p v-if="!portfolioChanges.increases.length && !portfolioChanges.reductions.length" class="holdings-message">No material weight changes.</p></div></div>
+          <div><h4>Added</h4><div class="holdings-list"><div v-for="holding in portfolioChanges.additions" :key="`add-${holding.isin}`"><span><strong>{{ holding.instrument_name }}</strong><small><i :class="['holding-type', holdingType(holding).className]">{{ holdingType(holding).label }}</i>{{ holding.isin }}</small></span><b>+{{ (holding.weight * 100).toFixed(2) }}%</b></div><p v-if="!portfolioChanges.additions.length" class="holdings-message">No new ISINs.</p></div></div>
+          <div><h4>Exited</h4><div class="holdings-list"><div v-for="holding in portfolioChanges.exits" :key="`exit-${holding.isin}`"><span><strong>{{ holding.instrument_name }}</strong><small><i :class="['holding-type', holdingType(holding).className]">{{ holdingType(holding).label }}</i>{{ holding.isin }}</small></span><b class="negative">−{{ (holding.weight * 100).toFixed(2) }}%</b></div><p v-if="!portfolioChanges.exits.length" class="holdings-message">No exited ISINs.</p></div></div>
+          <div><h4>Largest weight changes</h4><div class="holdings-list"><div v-for="holding in [...portfolioChanges.increases, ...portfolioChanges.reductions].sort((left, right) => Math.abs(right.change) - Math.abs(left.change)).slice(0, 5)" :key="`move-${holding.isin}`"><span><strong>{{ holding.instrument_name }}</strong><small><i :class="['holding-type', holdingType(holding).className]">{{ holdingType(holding).label }}</i>{{ holding.previousWeight ? `${(holding.previousWeight * 100).toFixed(2)}% to ${(holding.weight * 100).toFixed(2)}%` : holding.isin }}</small></span><b :class="{ positive: holding.change > 0, negative: holding.change < 0 }">{{ holding.change >= 0 ? '+' : '' }}{{ (holding.change * 100).toFixed(2) }} pp</b></div><p v-if="!portfolioChanges.increases.length && !portfolioChanges.reductions.length" class="holdings-message">No material weight changes.</p></div></div>
           <div><h4>Largest sector shifts</h4><div class="holdings-list"><div v-for="sector in portfolioChanges.sectorChanges" :key="sector.name"><span><strong>{{ sector.name }}</strong><small>{{ (sector.previousWeight * 100).toFixed(2) }}% to {{ (sector.currentWeight * 100).toFixed(2) }}%</small></span><b :class="{ positive: sector.change > 0, negative: sector.change < 0 }">{{ sector.change >= 0 ? '+' : '' }}{{ (sector.change * 100).toFixed(2) }} pp</b></div><p v-if="!portfolioChanges.sectorChanges.length" class="holdings-message">No disclosed sector shifts.</p></div></div>
         </div>
         <p class="holdings-note">Changes use positive, non-derivative positions with an ISIN. Sector shifts use disclosed sector labels and may be unavailable for debt or non-equity holdings.</p>
@@ -1882,6 +2119,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
       <p v-if="error" class="message error">{{ error }}</p><div v-if="navDriverResults.length" class="compare-results"><button v-for="scheme in navDriverResults" :key="scheme.scheme_code" @click="selectNavDriverScheme(scheme)"><span><strong>{{ scheme.name }}</strong><small>{{ scheme.amc }} · {{ scheme.category || 'Category not supplied' }}</small></span><span>Analyse</span></button></div>
       <p v-else-if="!navDrivers" class="message">Choose a scheme with a mapped equity portfolio and NSE price coverage.</p>
       <template v-if="navDrivers">
+        <button class="download-button section-download" @click="downloadNavDrivers">Download Excel</button>
         <div class="change-selected"><div><strong>{{ navDrivers.scheme.name }}</strong><small>Portfolio disclosed {{ navDrivers.portfolio.as_of_date }} · NSE close {{ navDrivers.date }}</small></div><button class="remove-compare" @click="navDriverData = null">×</button></div>
         <section class="nav-driver-story" aria-label="NAV movement summary">
           <p class="eyebrow">In plain English</p>
@@ -1910,6 +2148,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
     </section>
 
     <section v-else-if="selected" class="detail card" aria-label="Scheme detail">
+      <button class="download-button detail-download" @click="downloadSchemeDetail">Download Excel</button>
       <button class="back" @click="closeDetail">← All schemes</button>
       <div class="detail-heading">
         <div><p class="eyebrow">{{ selected.category || selected.amc || 'AMFI scheme' }} · {{ selected.scheme_code }}</p><h2>{{ selected.name }}</h2><p class="scheme-category">{{ selected.amc }}<template v-if="selected.category"> · {{ selected.category }}</template></p><p v-if="selected.benchmark_name" class="benchmark-note"><span>Reference benchmark</span>{{ selected.benchmark_name }} <em>{{ selected.benchmark_mapping_status }}</em></p></div>

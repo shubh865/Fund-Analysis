@@ -25,9 +25,43 @@ function loadLocalEnvironment() {
 }
 
 loadLocalEnvironment();
-const authUsername = process.env.AUTH_USERNAME || 'admin';
-const authPassword = process.env.AUTH_PASSWORD || 'change-me';
-if (!process.env.AUTH_PASSWORD) console.warn('Authentication is using the default password. Create .env from .env.example before sharing this site.');
+const authUsername = process.env.AUTH_USERNAME || '';
+const authPassword = process.env.AUTH_PASSWORD || '';
+if (!validConfiguredAdmin(authUsername, authPassword)) {
+  throw new Error('Set AUTH_USERNAME and a private AUTH_PASSWORD (at least 10 characters) in .env before starting the internal-access server. Copy .env.example to .env first.');
+}
+
+function validConfiguredAdmin(username, password) {
+  return /^[a-zA-Z0-9._-]{3,48}$/.test(username) && password.length >= 10 && password !== 'change-me';
+}
+
+function passwordRecord(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return { salt, hash: crypto.scryptSync(password, salt, 64).toString('hex') };
+}
+
+function passwordMatches(password, salt, expectedHash) {
+  const actual = crypto.scryptSync(password, salt, 64);
+  const expected = Buffer.from(expectedHash, 'hex');
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+function validUsername(value) {
+  return /^[a-zA-Z0-9._-]{3,48}$/.test(value);
+}
+
+function createInitialSuperAdmin() {
+  const existing = db.prepare('SELECT user_id FROM app_users WHERE role=\'super_admin\' LIMIT 1').get();
+  if (existing) return;
+  const credentials = passwordRecord(authPassword);
+  db.prepare(`INSERT INTO app_users
+    (username, full_name, password_salt, password_hash, role, status, approved_at)
+    VALUES (?, ?, ?, ?, 'super_admin', 'approved', CURRENT_TIMESTAMP)`)
+    .run(authUsername, 'Super Admin', credentials.salt, credentials.hash);
+  console.log(`Created the initial Super Admin account for ${authUsername}.`);
+}
+
+createInitialSuperAdmin();
 
 app.use(express.json());
 
@@ -45,42 +79,178 @@ function activeSession(request) {
     if (token) sessions.delete(token);
     return null;
   }
-  return { token, ...session };
+  const user = db.prepare('SELECT user_id,username,full_name,role,status FROM app_users WHERE user_id=?').get(session.userId);
+  if (!user || user.status !== 'approved') {
+    sessions.delete(token);
+    return null;
+  }
+  return { token, ...session, user };
 }
 
 function sessionCookie(token, maxAgeSeconds = sessionMaxAgeMs / 1000) {
   return `fund_analysis_session=${encodeURIComponent(token || '')}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
 }
 
+function requestStatusCookie(token, maxAgeSeconds = 30 * 24 * 60 * 60) {
+  return `fund_analysis_request_status=${encodeURIComponent(token || '')}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+}
+
 app.get('/api/auth/session', (request, response) => {
   const session = activeSession(request);
-  response.json({ authenticated: Boolean(session), username: session?.username || null });
+  response.json({ authenticated: Boolean(session), username: session?.user.username || null, role: session?.user.role || null });
 });
 
 app.post('/api/auth/login', (request, response) => {
   const username = String(request.body?.username || '').trim();
   const password = String(request.body?.password || '');
-  if (!username || !password || username !== authUsername || password !== authPassword) {
+  const user = db.prepare('SELECT user_id,username,password_salt,password_hash,role,status FROM app_users WHERE username=?').get(username);
+  if (!user || !password || !passwordMatches(password, user.password_salt, user.password_hash)) {
     return response.status(401).json({ error: 'Incorrect username or password.' });
   }
+  if (user.status === 'pending') return response.status(403).json({ error: 'Your access request is awaiting Super Admin approval.' });
+  if (user.status !== 'approved') return response.status(403).json({ error: 'This account does not have access. Contact the Super Admin.' });
   const token = crypto.randomBytes(32).toString('base64url');
-  sessions.set(token, { username, expiresAt: Date.now() + sessionMaxAgeMs });
+  sessions.set(token, { userId: user.user_id, expiresAt: Date.now() + sessionMaxAgeMs });
+  logUsage(user.user_id, 'login');
   response.setHeader('Set-Cookie', sessionCookie(token));
-  response.json({ authenticated: true, username });
+  response.json({ authenticated: true, username: user.username, role: user.role });
+});
+
+app.post('/api/auth/request-access', (request, response) => {
+  const fullName = String(request.body?.fullName || '').trim().replace(/\s+/g, ' ');
+  const username = String(request.body?.username || '').trim();
+  const email = String(request.body?.email || '').trim().toLowerCase();
+  const password = String(request.body?.password || '');
+  if (fullName.length < 2 || fullName.length > 100) return response.status(400).json({ error: 'Enter your full name.' });
+  if (!validUsername(username)) return response.status(400).json({ error: 'Username must be 3–48 characters: letters, numbers, dot, dash, or underscore.' });
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return response.status(400).json({ error: 'Enter a valid email address, or leave it blank.' });
+  if (password.length < 10) return response.status(400).json({ error: 'Choose a password with at least 10 characters.' });
+  const credentials = passwordRecord(password);
+  const requestStatusToken = crypto.randomBytes(24).toString('base64url');
+  try {
+    db.prepare(`INSERT INTO app_users (username,full_name,email,password_salt,password_hash,request_status_token,role,status)
+      VALUES (?, ?, ?, ?, ?, ?, 'user', 'pending')`).run(username, fullName, email || null, credentials.salt, credentials.hash, requestStatusToken);
+  } catch (error) {
+    if (/unique/i.test(error.message)) return response.status(409).json({ error: 'That username is already requested or in use.' });
+    throw error;
+  }
+  response.setHeader('Set-Cookie', requestStatusCookie(requestStatusToken));
+  response.status(201).json({ message: 'Sign-up complete. Your account is pending Super Admin approval.', status: 'pending', username });
+});
+
+app.get('/api/auth/access-status', (request, response) => {
+  const token = readCookies(request).fund_analysis_request_status;
+  if (!token) return response.json({ status: null });
+  const user = db.prepare('SELECT username,full_name,status FROM app_users WHERE request_status_token=?').get(token);
+  if (!user) {
+    response.setHeader('Set-Cookie', requestStatusCookie('', 0));
+    return response.json({ status: null });
+  }
+  return response.json({ status: user.status, username: user.username, fullName: user.full_name });
 });
 
 app.post('/api/auth/logout', (request, response) => {
   const session = activeSession(request);
-  if (session) sessions.delete(session.token);
+  if (session) {
+    logUsage(session.user.user_id, 'logout');
+    sessions.delete(session.token);
+  }
   response.setHeader('Set-Cookie', sessionCookie('', 0));
   response.status(204).end();
 });
+
+function requireSuperAdmin(request, response, next) {
+  const session = activeSession(request);
+  if (!session || session.user.role !== 'super_admin') return response.status(403).json({ error: 'Super Admin access is required.' });
+  request.superAdmin = session.user;
+  return next();
+}
+
+function invalidateUserSessions(userId) {
+  for (const [token, session] of sessions) if (session.userId === userId) sessions.delete(token);
+}
+
+function logUsage(userId, eventType, eventValue = null) {
+  db.prepare('INSERT INTO app_usage_events (user_id,event_type,event_value) VALUES (?, ?, ?)').run(userId, eventType, eventValue);
+}
 
 // All analytics data stays behind the local authenticated session.
 app.use('/api', (request, response, next) => {
   if (request.path === '/health') return next();
   if (!activeSession(request)) return response.status(401).json({ error: 'Please sign in to access the analytics.' });
   return next();
+});
+
+app.post('/api/usage/page-view', (request, response) => {
+  const session = activeSession(request);
+  const section = String(request.body?.section || '').trim().toLowerCase();
+  const allowedSections = new Set(['schemes', 'quartiles', 'peers', 'overlap', 'changes', 'drivers', 'admin']);
+  if (!allowedSections.has(section)) return response.status(400).json({ error: 'Unknown dashboard section.' });
+  logUsage(session.user.user_id, 'page_view', section);
+  response.status(204).end();
+});
+
+app.get('/api/admin/users', requireSuperAdmin, (request, response) => {
+  const users = db.prepare(`SELECT user_id,username,full_name,email,role,status,requested_at,approved_at,updated_at
+    FROM app_users ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, requested_at DESC`).all();
+  response.json({ users });
+});
+
+app.get('/api/admin/usage', requireSuperAdmin, (request, response) => {
+  const rawDays = Number(request.query.days || 30);
+  const days = Number.isFinite(rawDays) ? Math.min(Math.max(Math.floor(rawDays), 1), 90) : 30;
+  const cutoff = `-${days - 1} days`;
+  const query = String(request.query.q || '').trim().slice(0, 100);
+  const userFilter = query ? `AND (lower(u.username) LIKE lower(?) OR lower(u.full_name) LIKE lower(?) OR lower(COALESCE(u.email,'')) LIKE lower(?))` : '';
+  const userParams = query ? [cutoff, `%${query}%`, `%${query}%`, `%${query}%`] : [cutoff];
+  const totals = db.prepare(`SELECT
+      COUNT(*) AS events,
+      COUNT(DISTINCT e.user_id) AS active_users,
+      SUM(CASE WHEN e.event_type='login' THEN 1 ELSE 0 END) AS logins
+    FROM app_usage_events e JOIN app_users u ON u.user_id=e.user_id
+    WHERE e.created_at >= datetime('now', ?) AND u.role <> 'super_admin'`)
+    .get(cutoff);
+  const daily = db.prepare(`SELECT date(e.created_at) AS date, COUNT(DISTINCT e.user_id) AS active_users,
+      SUM(CASE WHEN e.event_type='login' THEN 1 ELSE 0 END) AS logins
+    FROM app_usage_events e JOIN app_users u ON u.user_id=e.user_id
+    WHERE e.created_at >= datetime('now', ?) AND u.role <> 'super_admin'
+    GROUP BY date(e.created_at) ORDER BY date ASC`).all(cutoff);
+  const events = db.prepare(`SELECT e.event_type,e.event_value,e.created_at,u.username,u.full_name
+    FROM app_usage_events e JOIN app_users u ON u.user_id=e.user_id
+    WHERE e.created_at >= datetime('now', ?) AND u.role <> 'super_admin' ${userFilter}
+    ORDER BY e.event_id DESC LIMIT 300`).all(...userParams);
+  const grouped = { login: [], logout: [], page_view: [] };
+  for (const event of events) grouped[event.event_type]?.push(event);
+  response.json({ days, query, totals: { events: Number(totals.events || 0), active_users: Number(totals.active_users || 0), logins: Number(totals.logins || 0) }, daily, events: grouped });
+});
+
+app.post('/api/admin/users/:userId/approve', requireSuperAdmin, (request, response) => {
+  const userId = Number(request.params.userId);
+  const user = db.prepare('SELECT user_id,role,status FROM app_users WHERE user_id=?').get(userId);
+  if (!user) return response.status(404).json({ error: 'User not found.' });
+  if (user.role === 'super_admin') return response.status(400).json({ error: 'The Super Admin account cannot be changed here.' });
+  db.prepare(`UPDATE app_users SET status='approved',approved_at=CURRENT_TIMESTAMP,approved_by_user_id=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?`).run(request.superAdmin.user_id, userId);
+  response.json({ message: 'User approved.' });
+});
+
+app.post('/api/admin/users/:userId/reject', requireSuperAdmin, (request, response) => {
+  const userId = Number(request.params.userId);
+  const user = db.prepare('SELECT user_id,role FROM app_users WHERE user_id=?').get(userId);
+  if (!user) return response.status(404).json({ error: 'User not found.' });
+  if (user.role === 'super_admin') return response.status(400).json({ error: 'The Super Admin account cannot be changed here.' });
+  db.prepare(`UPDATE app_users SET status='rejected',updated_at=CURRENT_TIMESTAMP WHERE user_id=?`).run(userId);
+  invalidateUserSessions(userId);
+  response.json({ message: 'Request rejected.' });
+});
+
+app.post('/api/admin/users/:userId/suspend', requireSuperAdmin, (request, response) => {
+  const userId = Number(request.params.userId);
+  const user = db.prepare('SELECT user_id,role FROM app_users WHERE user_id=?').get(userId);
+  if (!user) return response.status(404).json({ error: 'User not found.' });
+  if (user.role === 'super_admin') return response.status(400).json({ error: 'The Super Admin account cannot be changed here.' });
+  db.prepare(`UPDATE app_users SET status='suspended',updated_at=CURRENT_TIMESTAMP WHERE user_id=?`).run(userId);
+  invalidateUserSessions(userId);
+  response.json({ message: 'User suspended.' });
 });
 
 function decodeXml(value) {
@@ -770,9 +940,16 @@ app.get('/api/categories/:category/peer-nav-history', (request, response) => {
     && daysBetween(scheme.latest_nav_date, latestPeerNavDate) <= 14
   ));
   let benchmarkMismatchCount = 0;
+  const excludedSchemes = [];
   schemes = schemes.filter((scheme) => {
     const mismatch = scheme.reported_benchmark_name && !benchmarkNamesMatch(benchmark.name, scheme.reported_benchmark_name);
-    if (mismatch) benchmarkMismatchCount += 1;
+    if (mismatch) {
+      benchmarkMismatchCount += 1;
+      excludedSchemes.push({
+        ...scheme,
+        exclusion_reason: 'different_reported_benchmark',
+      });
+    }
     return !mismatch;
   });
   schemes = dedupePeerSchemes(schemes, plan);
@@ -793,7 +970,7 @@ app.get('/api/categories/:category/peer-nav-history', (request, response) => {
 
   const histories = Object.fromEntries(schemes.map((scheme) => [scheme.scheme_code, []]));
   for (const row of navRows) histories[row.scheme_code]?.push({ date: row.date, nav: row.nav });
-  response.json({ category, categories: requestedCategories, plan, benchmark, benchmark_mismatch_count: benchmarkMismatchCount, schemes, histories, benchmark_history: benchmarkHistory });
+  response.json({ category, categories: requestedCategories, plan, benchmark, benchmark_mismatch_count: benchmarkMismatchCount, excluded_schemes: dedupePeerSchemes(excludedSchemes, plan), schemes, histories, benchmark_history: benchmarkHistory });
 });
 
 app.get('/api/categories/:category/category-nav-history', (request, response) => {
