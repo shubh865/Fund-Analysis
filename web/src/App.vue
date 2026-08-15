@@ -1696,6 +1696,27 @@ const snapshotPlanLabel = computed(() => selectedTerHistory.value[0]?.plan_type 
 const latestFactsheet = computed(() => fundSnapshot.value.factsheet || null);
 const factsheetManagers = computed(() => latestFactsheet.value?.managers || []);
 const officialDebtQuants = computed(() => latestFactsheet.value?.debt_quants || null);
+const officialFactsheetRisk = computed(() => {
+  const records = latestFactsheet.value?.risk_metrics || [];
+  const metric = (field) => records.find((record) => Number.isFinite(Number(record[field])) && record[field] !== null) || null;
+  return {
+    sharpe: metric('sharpe_ratio'),
+    beta: metric('beta'),
+    trackingError: metric('tracking_error_percent'),
+    upside: metric('upside_capture_percent'),
+    downside: metric('downside_capture_percent'),
+  };
+});
+
+function factsheetRiskValue(record, field, suffix = '', digits = 2) {
+  if (!record || record[field] === null || !Number.isFinite(Number(record[field]))) return '—';
+  return `${Number(record[field]).toFixed(digits)}${suffix}`;
+}
+
+function factsheetRiskSource(record) {
+  if (!record) return 'Not stated in the imported factsheet';
+  return `${record.metric_window || 'AMC methodology'} · AMC-reported`;
+}
 const isDebtScheme = computed(() => /^debt scheme\b/i.test(selected.value?.category || ''));
 const isDistributionScheme = computed(() => /\b(idcw|dividend|payout|reinvestment|bonus)\b|income distribution/i.test(selected.value?.name || ''));
 const debtSnapshot = computed(() => {
@@ -2201,15 +2222,15 @@ watch(view, (section) => trackUsage(section));
           <div><span>Maximum drawdown</span><strong class="negative">{{ riskMetrics.fundDrawdown === null ? '—' : `${riskMetrics.fundDrawdown.toFixed(2)}%` }}</strong><small>Fund’s largest fall from a prior peak</small></div>
           <div><span>Benchmark drawdown</span><strong class="negative">{{ riskMetrics.benchmarkDrawdown === null ? '—' : `${riskMetrics.benchmarkDrawdown.toFixed(2)}%` }}</strong><small>On the same aligned date range</small></div>
           <div><span>Annualised volatility</span><strong>{{ riskMetrics.annualVolatility.toFixed(2) }}%</strong><small>How much the fund’s daily returns moved</small></div>
-          <div><span>Sharpe ratio</span><strong :class="{ positive: riskMetrics.sharpe > 0, negative: riskMetrics.sharpe < 0 }">{{ riskMetrics.sharpe === null ? '—' : riskMetrics.sharpe.toFixed(2) }}</strong><small>Return earned for each unit of volatility</small></div>
-          <div><span>Beta</span><strong>{{ riskMetrics.beta === null ? '—' : riskMetrics.beta.toFixed(2) }}</strong><small>Market sensitivity versus benchmark</small></div>
-          <div><span>Tracking error</span><strong>{{ riskMetrics.trackingError === null ? '—' : `${riskMetrics.trackingError.toFixed(2)}%` }}</strong><small>How differently it moved from benchmark</small></div>
-          <div><span>Upside capture</span><strong :class="{ positive: riskMetrics.upsideCapture > 100 }">{{ riskMetrics.upsideCapture === null ? '—' : `${riskMetrics.upsideCapture.toFixed(0)}%` }}</strong><small>Share of benchmark’s positive months captured</small></div>
-          <div><span>Downside capture</span><strong :class="{ positive: riskMetrics.downsideCapture < 100, negative: riskMetrics.downsideCapture > 100 }">{{ riskMetrics.downsideCapture === null ? '—' : `${riskMetrics.downsideCapture.toFixed(0)}%` }}</strong><small>Below 100% means less of benchmark’s fall</small></div>
+          <div><span>Sharpe ratio</span><strong :class="{ positive: officialFactsheetRisk.sharpe && Number(officialFactsheetRisk.sharpe.sharpe_ratio) > 0, negative: officialFactsheetRisk.sharpe && Number(officialFactsheetRisk.sharpe.sharpe_ratio) < 0 }">{{ factsheetRiskValue(officialFactsheetRisk.sharpe, 'sharpe_ratio') }}</strong><small>{{ factsheetRiskSource(officialFactsheetRisk.sharpe) }}</small></div>
+          <div><span>Beta</span><strong>{{ factsheetRiskValue(officialFactsheetRisk.beta, 'beta') }}</strong><small>{{ factsheetRiskSource(officialFactsheetRisk.beta) }}</small></div>
+          <div><span>Tracking error</span><strong>{{ factsheetRiskValue(officialFactsheetRisk.trackingError, 'tracking_error_percent', '%') }}</strong><small>{{ factsheetRiskSource(officialFactsheetRisk.trackingError) }}</small></div>
+          <div><span>Upside capture</span><strong :class="{ positive: officialFactsheetRisk.upside && Number(officialFactsheetRisk.upside.upside_capture_percent) > 100 }">{{ factsheetRiskValue(officialFactsheetRisk.upside, 'upside_capture_percent', '%', 0) }}</strong><small>{{ factsheetRiskSource(officialFactsheetRisk.upside) }}</small></div>
+          <div><span>Downside capture</span><strong :class="{ positive: officialFactsheetRisk.downside && Number(officialFactsheetRisk.downside.downside_capture_percent) < 100, negative: officialFactsheetRisk.downside && Number(officialFactsheetRisk.downside.downside_capture_percent) > 100 }">{{ factsheetRiskValue(officialFactsheetRisk.downside, 'downside_capture_percent', '%', 0) }}</strong><small>{{ factsheetRiskSource(officialFactsheetRisk.downside) }}</small></div>
           <div><span>Category upside capture</span><strong :class="{ positive: categoryCapture?.upside > 100 }">{{ categoryCaptureLoading ? '…' : categoryCapture?.upside === null || !categoryCapture ? '—' : `${categoryCapture.upside.toFixed(0)}%` }}</strong><small>Versus same-category {{ selectedCategoryPlan(selected.name).includes('direct') ? 'Direct' : 'Regular' }} peers</small></div>
           <div><span>Category downside capture</span><strong :class="{ positive: categoryCapture?.downside < 100, negative: categoryCapture?.downside > 100 }">{{ categoryCaptureLoading ? '…' : categoryCapture?.downside === null || !categoryCapture ? '—' : `${categoryCapture.downside.toFixed(0)}%` }}</strong><small>Below 100% means less of the category fall</small></div>
         </div>
-        <p class="risk-note">{{ riskMetrics.observations.toLocaleString() }} daily NAV observations. Sharpe uses the official RBI Repo Rate as its risk-free baseline. Category capture is calculated from the equal-weighted monthly returns of comparable same-category plans, excluding this fund.</p>
+        <p class="risk-note">{{ riskMetrics.observations.toLocaleString() }} daily NAV observations. Drawdown, annualised volatility and category capture are calculated from stored NAV history. Sharpe, beta, tracking error and benchmark capture are shown only when the AMC has reported them in an imported factsheet.</p>
       </section>
       <section v-else class="risk-section risk-unavailable" aria-label="Risk and resilience availability">
         <div class="risk-heading"><div><p class="eyebrow">Risk & resilience</p><h3>How the fund behaved on the way</h3></div></div>

@@ -17,7 +17,10 @@ function main() {
   // Discontinued plans are removed during the NAV import cleanup, so the
   // schemes table itself represents the currently supported universe.
   const active = '1=1';
-  const factsheetAmcs = scalar(`SELECT COUNT(DISTINCT source_amc) AS value FROM scheme_factsheet_snapshots`);
+  // AMC display names are sourced from different publishers.  Compare them
+  // case-insensitively so (for example) "quant Mutual Fund" is not reported
+  // as a different AMC from "Quant Mutual Fund".
+  const factsheetAmcs = scalar(`SELECT COUNT(DISTINCT LOWER(TRIM(source_amc))) AS value FROM scheme_factsheet_snapshots`);
   const schemeAmcs = scalar(`SELECT COUNT(DISTINCT amc) AS value FROM schemes s WHERE ${active}`);
   const portfolioAmcs = scalar(`
     SELECT COUNT(DISTINCT amc) AS value
@@ -56,7 +59,11 @@ function main() {
     SELECT DISTINCT s.amc
     FROM schemes s
     WHERE ${active} AND s.amc IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM scheme_factsheet_snapshots fs WHERE fs.source_amc=s.amc)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM scheme_factsheet_snapshots fs
+        WHERE LOWER(TRIM(fs.source_amc))=LOWER(TRIM(s.amc))
+      )
     ORDER BY s.amc
   `).all().map((row) => row.amc);
   console.log(missingFactsheets.length ? missingFactsheets.map((amc) => `- ${amc}`).join('\n') : '- none');

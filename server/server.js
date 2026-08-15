@@ -747,11 +747,21 @@ app.get('/api/schemes/:schemeCode/fund-snapshot', (request, response) => {
     FROM scheme_debt_quant_snapshots
     WHERE scheme_code = ? AND as_of_date = ?
   `).get(scheme.scheme_code, factsheet.as_of_date) : null;
+  const factsheetRisk = db.prepare(`
+    SELECT as_of_date, metric_window, sharpe_ratio, beta, tracking_error_percent,
+      upside_capture_percent, downside_capture_percent, standard_deviation_percent,
+      benchmark_name, source_url
+    FROM scheme_factsheet_risk_snapshots
+    WHERE scheme_code = ?
+    ORDER BY as_of_date DESC,
+      CASE WHEN metric_window LIKE '3Y%' THEN 0 ELSE 1 END,
+      metric_window
+  `).all(scheme.scheme_code);
 
   response.json({
     aaum,
     ter,
-    factsheet: factsheet ? { ...factsheet, managers, debt_quants: debtQuants } : null,
+    factsheet: factsheet ? { ...factsheet, managers, debt_quants: debtQuants, risk_metrics: factsheetRisk } : null,
   });
 });
 

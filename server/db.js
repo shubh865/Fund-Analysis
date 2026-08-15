@@ -280,6 +280,25 @@ db.exec(`
     PRIMARY KEY (scheme_code, as_of_date)
   );
 
+  -- Risk statistics reported directly by an AMC in its monthly factsheet.
+  -- Keep these separate from browser-calculated analytics: publishers can use
+  -- different benchmarks, windows and methodologies, all of which belong to
+  -- the reported observation rather than an inferred calculation.
+  CREATE TABLE IF NOT EXISTS scheme_factsheet_risk_snapshots (
+    scheme_code TEXT NOT NULL REFERENCES schemes(scheme_code),
+    as_of_date TEXT NOT NULL,
+    metric_window TEXT,
+    sharpe_ratio REAL,
+    beta REAL,
+    tracking_error_percent REAL,
+    upside_capture_percent REAL,
+    downside_capture_percent REAL,
+    standard_deviation_percent REAL,
+    benchmark_name TEXT,
+    source_url TEXT NOT NULL,
+    PRIMARY KEY (scheme_code, as_of_date, metric_window)
+  );
+
   -- Official NSE source observations for daily equity-price attribution.
   -- Holding-to-security matching uses the published ISIN, while estimated
   -- NAV-driver calculations stay in the browser.

@@ -1,0 +1,15 @@
+const db = require('../server/db');
+const AMC = 'Old Bridge Mutual Fund';
+const PAGE = 'https://www.oldbridgemf.com/factsheet.html';
+const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+const families = ['Old Bridge Flexi Cap Fund', 'Old Bridge Focused Fund', 'Old Bridge Arbitrage Fund'];
+async function main() {
+  console.log('Discovering the latest Old Bridge factsheet...');
+  const r = await fetch(PAGE, { headers: { 'user-agent': 'Mozilla/5.0' } }); if (!r.ok) throw new Error(`Old Bridge factsheet page returned ${r.status}.`); const html = await r.text();
+  const match = html.match(/href="([^"]*\/uploads\/[^" ]*Factsheet[^" ]*\.pdf)"/i); if (!match) throw new Error('No current Old Bridge factsheet PDF found.'); const url = new URL(match[1], PAGE).href;
+  const doc = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0' } }); if (!doc.ok) throw new Error(`Old Bridge PDF returned ${doc.status}.`); const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs'); const pdf = await pdfjs.getDocument({ data: new Uint8Array(await doc.arrayBuffer()) }).promise; const pages=[]; for(let n=1;n<=pdf.numPages;n+=1){const p=await pdf.getPage(n);pages.push(clean((await p.getTextContent()).items.map(x=>x.str).join(' ')));}
+  const joined=pages.join(' '); const dm=joined.match(/(?:Data as on|as on)\s*(?:\d{1,2}\w*\s+)?(January|February|March|April|May|June|July|August|September|October|November|December)[,\s]+(\d{4})/i); if(!dm) throw new Error('Old Bridge factsheet has no recognised disclosure month.'); const d=new Date(`${dm[1]} 1, ${dm[2]} UTC`); const date=new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,0)).toISOString().slice(0,10);
+  const schemes=db.prepare('SELECT scheme_code,name FROM schemes WHERE amc=?').all(AMC); const records=families.map(f=>({codes:schemes.filter(s=>s.name.startsWith(f)).map(s=>s.scheme_code),page:pages.find(p=>p.toUpperCase().includes(f.toUpperCase())&&/Exit Load/i.test(p))})); const matched=records.filter(x=>x.page&&x.codes.length); const count=matched.flatMap(x=>x.codes).length; if(count!==schemes.length) throw new Error(`Only ${count}/${schemes.length} Old Bridge plans matched; aborting without changes.`);
+  const insert=db.prepare(`INSERT INTO scheme_factsheet_snapshots (scheme_code,as_of_date,source_amc,exit_load_text,source_url,source_file) VALUES (?,?,?,?,?,?) ON CONFLICT(scheme_code,as_of_date) DO UPDATE SET exit_load_text=excluded.exit_load_text,source_url=excluded.source_url,source_file=excluded.source_file`); let imported=0; db.transaction(()=>{db.prepare(`DELETE FROM scheme_factsheet_snapshots WHERE as_of_date=? AND scheme_code IN (SELECT scheme_code FROM schemes WHERE amc=?)`).run(date,AMC);for(const row of matched){const e=(row.page.match(/Exit Load\s*[:\-]?\s*([\s\S]{0,250}?)(?=\s+(?:Fund Manager|Benchmark|Expense|AUM|NAV))/i)||[])[1];for(const code of row.codes){insert.run(code,date,AMC,clean(e)||null,url,new URL(url).pathname.split('/').pop());imported+=1;}}})(); console.log(`Imported Old Bridge factsheet observations for ${imported} NAV plans as of ${date}.`);
+}
+main().catch(e=>{console.error(e.stack||e.message);process.exit(1);});
