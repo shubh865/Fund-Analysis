@@ -98,7 +98,168 @@ const adminLoading = ref(false);
 const adminError = ref('');
 const usageSearch = ref('');
 const adminUsage = ref({ days: 30, totals: { events: 0, active_users: 0, logins: 0 }, daily: [], events: { login: [], logout: [], page_view: [] } });
+const interfaceLanguage = ref(localStorage.getItem('fund-analysis-language') === 'gu' ? 'gu' : 'en');
 let searchTimer;
+let interfaceObserver;
+
+// Only interface copy is translated. Fund names, AMCs, benchmarks, dates and
+// every stored/calculated number deliberately remain in their original form.
+const gujaratiCopy = {
+  'Checking secure access…': 'સુરક્ષિત ઍક્સેસ તપાસી રહ્યા છીએ…', 'Mutual fund analytics': 'મ્યુચ્યુઅલ ફંડ એનાલિટિક્સ',
+  'From NAV to Insights.': 'NAV થી ઇનસાઇટ્સ સુધી.', 'From NAV': 'NAV થી', 'to Insights.': 'ઇનસાઇટ્સ સુધી.',
+  'Sign in to open the research workspace.': 'રિસર્ચ વર્કસ્પેસ ખોલવા માટે સાઇન ઇન કરો.', 'Username': 'યુઝરનેમ', 'Password': 'પાસવર્ડ',
+  'Sign in': 'સાઇન ઇન', 'Signing in…': 'સાઇન ઇન થઈ રહ્યું છે…', 'New here? Sign up': 'નવા છો? સાઇન અપ કરો',
+  'Create your account.': 'તમારું એકાઉન્ટ બનાવો.', 'Create your': 'તમારું', 'account.': 'એકાઉન્ટ બનાવો.',
+  'After sign-up, your account stays pending until the Super Admin approves it.': 'સાઇન અપ પછી સુપર એડમિન મંજૂરી આપે ત્યાં સુધી તમારું એકાઉન્ટ પેન્ડિંગ રહેશે.',
+  'Full name': 'પૂરું નામ', 'Office email': 'ઓફિસ ઈમેઇલ', '(optional)': '(વૈકલ્પિક)', 'Choose password': 'પાસવર્ડ પસંદ કરો',
+  'Creating...': 'બનાવી રહ્યા છીએ...', 'Sign up': 'સાઇન અપ', 'Back to sign in': 'સાઇન ઇન પર પાછા જાઓ',
+  'Admin': 'એડમિન', 'Sign out': 'સાઇન આઉટ', 'Explore every scheme.': 'દરેક સ્કીમ જાણો.', 'Start with its NAV.': 'તેના NAV થી શરૂઆત કરો.',
+  'Schemes': 'સ્કીમ્સ', 'Quartiles': 'ક્વાર્ટાઇલ્સ', 'Peer analysis': 'પિયર એનાલિસિસ', 'Portfolio overlap': 'પોર્ટફોલિયો ઓવરલૅપ',
+  'Portfolio changes': 'પોર્ટફોલિયો ફેરફારો', 'NAV movement analysis': 'NAV મૂવમેન્ટ એનાલિસિસ', 'Access control': 'ઍક્સેસ નિયંત્રણ',
+  'Super Admin': 'સુપર એડમિન', 'Refresh': 'રિફ્રેશ', 'Refreshing...': 'રિફ્રેશ થઈ રહ્યું છે...', 'Approve': 'મંજૂર કરો', 'Reject': 'નકારો', 'Suspend': 'સસ્પેન્ડ કરો',
+  'Usage log': 'ઉપયોગ લોગ', 'Search': 'શોધો', 'Active users': 'સક્રિય યુઝર્સ', 'Logins': 'લોગિન્સ', 'Recorded events': 'નોંધાયેલી પ્રવૃત્તિઓ',
+  'Find a scheme': 'સ્કીમ શોધો', 'Browse filters': 'ફિલ્ટર્સ બ્રાઉઝ કરો', 'Category': 'કેટેગરી', 'Subcategory': 'સબકેટેગરી', 'Plan': 'પ્લાન',
+  'All categories': 'બધી કેટેગરીઝ', 'All subcategories': 'બધી સબકેટેગરીઝ', 'All plans': 'બધા પ્લાન્સ', 'Direct Growth': 'ડાયરેક્ટ ગ્રોથ',
+  'Regular Growth': 'રેગ્યુલર ગ્રોથ', 'Fund structure': 'ફંડ સ્ટ્રક્ચર', 'All': 'બધા', 'Open-ended': 'ઓપન-એન્ડેડ', 'Close-ended': 'ક્લોઝ-એન્ડેડ',
+  'Searching…': 'શોધી રહ્યા છીએ…', 'No schemes yet. Run the daily NAV importer to populate this list.': 'હજુ કોઈ સ્કીમ નથી. આ સૂચિ ભરવા માટે દૈનિક NAV ઇમ્પોર્ટર ચલાવો.',
+  'Download Excel': 'Excel ડાઉનલોડ કરો', 'Return basis': 'રિટર્ન આધાર', 'Net return': 'નેટ રિટર્ન', 'Gross before TER': 'TER પહેલાં ગ્રોસ',
+  'As of month': 'મહિના અનુસાર', 'Select a subcategory': 'સબકેટેગરી પસંદ કરો', 'No eligible paired Growth plans.': 'કોઈ યોગ્ય જોડાયેલા ગ્રોથ પ્લાન્સ નથી.',
+  'Comparison workspace': 'તુલના વર્કસ્પેસ', 'Compare up to five schemes': 'પાંચ સુધીની સ્કીમ્સની તુલના કરો', 'Add scheme': 'સ્કીમ ઉમેરો',
+  'Selected funds': 'પસંદ કરેલ ફંડ્સ', 'Category peers': 'કેટેગરી પિયર્સ', 'Portfolio disclosure': 'પોર્ટફોલિયો ડિસ્ક્લોઝર',
+  'Top 10 holdings': 'ટોપ 10 હોલ્ડિંગ્સ', 'Top sectors': 'ટોપ સેક્ટર્સ', 'Credit-quality allocation': 'ક્રેડિટ ક્વૉલિટી એલોકેશન',
+  'Risk & resilience': 'રિસ્ક અને રિઝિલિયન્સ', 'Fund snapshot': 'ફંડ સ્નેપશોટ', 'Debt snapshot': 'ડેટ સ્નેપશોટ',
+  'AMC factsheet': 'AMC ફેક્ટશીટ', 'Official debt quants': 'ઓફિશિયલ ડેટ ક્વોન્ટ્સ', 'Direct vs Regular': 'ડાયરેક્ટ vs રેગ્યુલર',
+  'NAV history': 'NAV હિસ્ટ્રી', 'Fund vs benchmark growth': 'ફંડ vs બેન્ચમાર્ક ગ્રોથ', 'Point-to-point returns': 'પોઇન્ટ-ટુ-પોઇન્ટ રિટર્ન્સ',
+  'Portfolio holding': 'પોર્ટફોલિયો હોલ્ડિંગ', 'Equity allocation': 'ઇક્વિટી એલોકેશન', 'Portfolio exposure': 'પોર્ટફોલિયો એક્સપોઝર',
+  'Loading raw monthly holdings…': 'માસિક હોલ્ડિંગ્સ લોડ થઈ રહી છે…', 'No recognised credit ratings in this disclosure.': 'આ ડિસ્ક્લોઝરમાં માન્ય ક્રેડિટ રેટિંગ્સ નથી.',
+  'Sector allocation is available for equity holdings only.': 'સેક્ટર એલોકેશન માત્ર ઇક્વિટી હોલ્ડિંગ્સ માટે ઉપલબ્ધ છે.',
+  'Modified duration': 'મોડિફાઇડ ડ્યુરેશન', 'Average maturity': 'એવરેજ મેચ્યોરિટી', 'Residual maturity': 'રેસિડ્યુઅલ મેચ્યોરિટી',
+  'Yield to maturity': 'યીલ્ડ ટુ મેચ્યોરિટી', 'Macaulay duration': 'મેકોલે ડ્યુરેશન', 'Standard deviation': 'સ્ટાન્ડર્ડ ડિવિએશન',
+  'Total AUM': 'કુલ AUM', 'SEBI Risk-o-meter': 'SEBI રિસ્ક-ઓ-મીટર', 'Direct TER': 'ડાયરેક્ટ TER', 'Regular TER': 'રેગ્યુલર TER',
+  '1Y category quartile': '1Y કેટેગરી ક્વાર્ટાઇલ', '1Y volatility': '1Y વોલેટિલિટી', '1Y Sharpe': '1Y શાર્પે',
+  'Select a category': 'કેટેગરી પસંદ કરો', 'Choose a category and subcategory to split paired Growth plans into performance quartiles.': 'જોડાયેલા ગ્રોથ પ્લાન્સને પર્ફોર્મન્સ ક્વાર્ટાઇલ્સમાં વહેંચવા માટે કેટેગરી અને સબકેટેગરી પસંદ કરો.',
+  'Loading raw NAV observations…': 'કાચા NAV અવલોકનો લોડ થઈ રહ્યા છે…', 'Net return is the investor return calculated directly from published NAV.': 'નેટ રિટર્ન પ્રકાશિત NAV પરથી સીધું ગણાયેલ રોકાણકારનું રિટર્ન છે.',
+  'All eligible AMCs are ranked and the best 20 representatives are displayed. Q1 holds the top 25% of the displayed set by Direct Growth return where available; Regular Growth is used only when a Direct plan does not exist.': 'બધા યોગ્ય AMC ને ક્રમ આપવામાં આવે છે અને શ્રેષ્ઠ 20 પ્રતિનિધિઓ દર્શાવવામાં આવે છે. જ્યાં ડાયરેક્ટ ગ્રોથ ઉપલબ્ધ હોય ત્યાં Q1 માં ટોચના 25% હોય છે; ડાયરેક્ટ પ્લાન ન હોય ત્યારે જ રેગ્યુલર ગ્રોથ વપરાય છે.',
+  'Fund': 'ફંડ', 'No eligible paired Growth plans.': 'કોઈ યોગ્ય જોડાયેલા ગ્રોથ પ્લાન્સ નથી.', '+ Add': '+ ઉમેરો',
+  'Search for the first scheme you would like to compare.': 'તમે જે પહેલી સ્કીમની તુલના કરવા માંગો છો તે શોધો.', 'NAV comparison': 'NAV તુલના', 'Selected funds growth': 'પસંદ કરેલા ફંડ્સનો ગ્રોથ',
+  'Growth-plan returns and benchmark alpha are calculated from aligned source dates in your browser.': 'ગ્રોથ પ્લાન રિટર્ન્સ અને બેન્ચમાર્ક આલ્ફા તમારા બ્રાઉઝરમાં મેળ ખાતી સોર્સ તારીખો પરથી ગણવામાં આવે છે.',
+  'Alpha is fund return minus its mapped benchmark return.': 'આલ્ફા એટલે ફંડ રિટર્નમાંથી તેના મેપ કરેલા બેન્ચમાર્ક રિટર્નનો તફાવત.',
+  'Compare a whole category': 'આખી કેટેગરીની તુલના કરો', 'Average every possible holding period, then see which peers beat their benchmark most consistently.': 'દરેક શક્ય હોલ્ડિંગ પિરિયડની સરેરાશ જુઓ, પછી કયા પિયર્સે બેન્ચમાર્કને સૌથી સતત હરાવ્યું તે જુઓ.',
+  'Plans': 'પ્લાન્સ', 'All Growth plans': 'બધા ગ્રોથ પ્લાન્સ', 'Holding period': 'હોલ્ડિંગ પિરિયડ', 'Choose a category to analyse its peer funds.': 'તેના પિયર ફંડ્સનું વિશ્લેષણ કરવા માટે કેટેગરી પસંદ કરો.',
+  'Loading source histories and calculating rolling peer metrics…': 'સોર્સ હિસ્ટ્રી લોડ કરીને રોલિંગ પિયર મેટ્રિક્સની ગણતરી થઈ રહી છે…',
+  "The mapped benchmark's TRI history is not available from an approved source, so alpha and consistency are not calculated.": 'મેપ કરેલા બેન્ચમાર્કની TRI હિસ્ટ્રી માન્ય સોર્સમાંથી ઉપલબ્ધ નથી, તેથી આલ્ફા અને કન્સિસ્ટન્સીની ગણતરી થતી નથી.',
+  'No eligible Growth plans have enough matching NAV and benchmark TRI history for this period.': 'આ સમયગાળા માટે કોઈ યોગ્ય ગ્રોથ પ્લાન પાસે પૂરતી મેળ ખાતી NAV અને બેન્ચમાર્ક TRI હિસ્ટ્રી નથી.',
+  'Fund avg': 'ફંડ સરેરાશ', 'Benchmark avg': 'બેન્ચમાર્ક સરેરાશ', 'Consistency journey': 'કન્સિસ્ટન્સી સફર', 'How one fund held up over time': 'એક ફંડ સમય સાથે કેવું ટક્યું',
+  'Share of rolling windows in which the fund beat its mapped benchmark.': 'રોલિંગ વિન્ડોઝનો હિસ્સો જેમાં ફંડે તેના મેપ કરેલા બેન્ચમાર્કને હરાવ્યું.', 'Inspect a fund': 'ફંડ તપાસો',
+  '1Y to latest available holding period': '1Y થી ઉપલબ્ધ તાજેતરના હોલ્ડિંગ પિરિયડ સુધી', 'Latest consistency': 'તાજેતરની કન્સિસ્ટન્સી', 'Reference only': 'માત્ર સંદર્ભ માટે',
+  'Not included in benchmark comparison': 'બેન્ચમાર્ક તુલનામાં સામેલ નથી', 'These funds are shown for completeness, but their alpha and consistency are not calculated here because they report a different benchmark from the category comparison.': 'પૂર્ણતા માટે આ ફંડ્સ બતાવવામાં આવ્યા છે, પરંતુ કેટેગરી તુલના કરતાં અલગ બેન્ચમાર્ક જણાવતા હોવાથી અહીં તેમનો આલ્ફા અને કન્સિસ્ટન્સી ગણાતો નથી.',
+  'Each window uses the same available fund NAV and benchmark TRI dates. Alpha means average fund return minus average benchmark return; consistency is the share of windows where the fund beat the benchmark.': 'દરેક વિન્ડો સમાન ઉપલબ્ધ ફંડ NAV અને બેન્ચમાર્ક TRI તારીખોનો ઉપયોગ કરે છે. આલ્ફા એટલે સરેરાશ ફંડ રિટર્નમાંથી સરેરાશ બેન્ચમાર્ક રિટર્નનો તફાવત; કન્સિસ્ટન્સી એટલે ફંડે બેન્ચમાર્કને હરાવ્યો હોય તેવી વિન્ડોઝનો હિસ્સો.',
+  'See what two funds actually own together': 'બે ફંડ્સ પાસે ખરેખર શું એકસાથે છે તે જુઓ', 'Compare only verified monthly disclosures. Common holdings are matched by ISIN, not by a fuzzy name match.': 'માત્ર વેરિફાઇડ માસિક ડિસ્ક્લોઝરની તુલના કરો. સામાન્ય હોલ્ડિંગ્સનું મેચિંગ નામથી નહીં પરંતુ ISIN દ્વારા થાય છે.',
+  'Choose two schemes. A scheme can be compared once its latest monthly disclosure has been imported and mapped.': 'બે સ્કીમ્સ પસંદ કરો. તાજેતરનું માસિક ડિસ્ક્લોઝર ઇમ્પોર્ટ અને મેપ થયા પછી સ્કીમની તુલના કરી શકાય છે.',
+  'Common holding overlap': 'સામાન્ય હોલ્ડિંગ ઓવરલૅપ', 'Sum of the lower weight for each shared ISIN': 'દરેક સામાન્ય ISIN માટે ઓછા વેઇટનું કુલ', 'Common sector overlap': 'સામાન્ય સેક્ટર ઓવરલૅપ',
+  'Sum of the lower disclosed sector weight': 'દરેક જાહેર કરેલા સેક્ટર માટે ઓછા વેઇટનું કુલ', 'Top-10 concentration': 'ટોપ-10 કન્સન્ટ્રેશન', 'First fund / second fund': 'પહેલું ફંડ / બીજું ફંડ',
+  'First fund': 'પહેલું ફંડ', 'Second fund': 'બીજું ફંડ', 'Common holding': 'સામાન્ય હોલ્ડિંગ', 'No common ISINs were found in these two current disclosures.': 'આ બંને વર્તમાન ડિસ્ક્લોઝરમાં કોઈ સામાન્ય ISIN મળ્યા નથી.',
+  'First fund: Top 10 holdings': 'પહેલું ફંડ: ટોપ 10 હોલ્ડિંગ્સ', 'Second fund: Top 10 holdings': 'બીજું ફંડ: ટોપ 10 હોલ્ડિંગ્સ', 'Only positive, non-derivative positions with an ISIN are used. The disclosures may have different as-of dates; compare the dates above before drawing a conclusion.': 'માત્ર ISIN ધરાવતી પોઝિટિવ, નોન-ડેરિવેટિવ પોઝિશન્સ વપરાય છે. ડિસ્ક્લોઝરની તારીખો અલગ હોઈ શકે છે; નિષ્કર્ષ કાઢતા પહેલાં ઉપરની તારીખોની તુલના કરો.',
+  'Portfolio change tracker': 'પોર્ટફોલિયો ફેરફાર ટ્રૅકર', 'See what a fund manager changed': 'ફંડ મેનેજરે શું બદલ્યું તે જુઓ', 'Compare the latest two verified monthly disclosures for a single scheme.': 'એક સ્કીમ માટે તાજેતરના બે વેરિફાઇડ માસિક ડિસ્ક્લોઝરની તુલના કરો.',
+  'View changes': 'ફેરફારો જુઓ', 'Choose a scheme to inspect how its disclosed portfolio changed month to month.': 'તેનું જાહેર કરેલું પોર્ટફોલિયો મહિના પ્રમાણે કેવી રીતે બદલાયું તે જોવા સ્કીમ પસંદ કરો.',
+  'Only one verified disclosure is available so far. The tracker will activate automatically after the next monthly portfolio refresh.': 'હાલમાં માત્ર એક વેરિફાઇડ ડિસ્ક્લોઝર ઉપલબ્ધ છે. આગામી માસિક પોર્ટફોલિયો રિફ્રેશ પછી ટ્રૅકર આપમેળે સક્રિય થશે.',
+  'Disclosure comparison': 'ડિસ્ક્લોઝર તુલના', 'Latest disclosure': 'તાજેતરનું ડિસ્ક્લોઝર', 'Compared with the prior available month': 'અગાઉના ઉપલબ્ધ મહિના સાથે તુલના', 'New holdings': 'નવી હોલ્ડિંગ્સ', 'All additions shown below': 'બધા ઉમેરાઓ નીચે બતાવ્યા છે',
+  'Exited holdings': 'બહાર થયેલી હોલ્ડિંગ્સ', 'All exits shown below': 'બધા એક્ઝિટ નીચે બતાવ્યા છે', 'Change in the largest ten positions': 'સૌથી મોટી દસ પોઝિશન્સમાં ફેરફાર', 'Added': 'ઉમેર્યું', 'Exited': 'બહાર થયું',
+  'No new ISINs.': 'કોઈ નવા ISIN નથી.', 'No exited ISINs.': 'કોઈ બહાર થયેલા ISIN નથી.', 'Largest weight changes': 'સૌથી મોટા વેઇટ ફેરફારો', 'No material weight changes.': 'કોઈ નોંધપાત્ર વેઇટ ફેરફાર નથી.', 'Largest sector shifts': 'સૌથી મોટા સેક્ટર ફેરફારો', 'No disclosed sector shifts.': 'કોઈ જાહેર કરેલા સેક્ટર ફેરફારો નથી.',
+  'Changes use positive, non-derivative positions with an ISIN. Sector shifts use disclosed sector labels and may be unavailable for debt or non-equity holdings.': 'ફેરફારો માટે ISIN ધરાવતી પોઝિટિવ, નોન-ડેરિવેટિવ પોઝિશન્સ વપરાય છે. સેક્ટર ફેરફારો જાહેર કરેલા સેક્ટર લેબલનો ઉપયોગ કરે છે અને ડેટ અથવા નોન-ઇક્વિટી હોલ્ડિંગ્સ માટે ઉપલબ્ધ ન હોઈ શકે.',
+  'What likely moved the fund today': 'આજે ફંડને કદાચ શેના કારણે ફેરફાર થયો', 'Uses the latest disclosed portfolio and official NSE closing prices; this is an estimate, not AMC attribution.': 'તાજા જાહેર કરેલા પોર્ટફોલિયો અને સત્તાવાર NSE ક્લોઝિંગ પ્રાઇસનો ઉપયોગ થાય છે; આ અંદાજ છે, AMC એટ્રિબ્યુશન નથી.',
+  'Analyse': 'વિશ્લેષણ કરો', 'Choose a scheme with a mapped equity portfolio and NSE price coverage.': 'મેપ કરેલા ઇક્વિટી પોર્ટફોલિયો અને NSE પ્રાઇસ કવરેજ ધરાવતી સ્કીમ પસંદ કરો.', 'In plain English': 'સરળ ભાષામાં', 'How the estimate works': 'અંદાજ કેવી રીતે કામ કરે છે',
+  'Fund weight × one-day stock return = estimated impact on the fund NAV.': 'ફંડ વેઇટ × એક દિવસનો સ્ટોક રિટર્ન = ફંડ NAV પર અંદાજિત અસર.', 'Actual NAV move': 'વાસ્તવિક NAV ફેરફાર', 'Estimated holdings move': 'અંદાજિત હોલ્ડિંગ્સ ફેરફાર',
+  'Residual': 'બાકી અસર', 'Actual NAV move minus the holdings estimate': 'વાસ્તવિક NAV ફેરફારમાંથી હોલ્ડિંગ્સના અંદાજનો તફાવત', 'A small residual means the disclosed priced holdings broadly explain the day. It will not be exactly zero because the fund may hold cash, debt, derivatives or unpriced positions, may trade after the disclosure date, and NAV also reflects daily expenses.': 'નાની બાકી અસરનો અર્થ છે કે જાહેર કરેલી પ્રાઇસવાળી હોલ્ડિંગ્સ દિવસના ફેરફારને મોટેભાગે સમજાવે છે. તે બરાબર શૂન્ય નહીં હોય કારણ કે ફંડમાં કૅશ, ડેટ, ડેરિવેટિવ્સ અથવા પ્રાઇસ વગરની પોઝિશન્સ હોઈ શકે છે, ડિસ્ક્લોઝર તારીખ પછી ટ્રેડ થઈ શકે છે અને NAVમાં દૈનિક ખર્ચ પણ સામેલ હોય છે.',
+  'Top positive drivers': 'ટોપ પોઝિટિવ ડ્રાઇવર્સ', 'Holding': 'હોલ્ડિંગ', 'Weight': 'વેઇટ', 'Price move': 'પ્રાઇસ ફેરફાર', 'Stock return': 'સ્ટોક રિટર્ન', 'NAV impact': 'NAV અસર', 'No priced positive contributors for this date.': 'આ તારીખ માટે કોઈ પ્રાઇસવાળા પોઝિટિવ કોન્ટ્રિબ્યુટર્સ નથી.', 'Top negative drivers': 'ટોપ નેગેટિવ ડ્રાઇવર્સ', 'No priced negative contributors for this date.': 'આ તારીખ માટે કોઈ પ્રાઇસવાળા નેગેટિવ કોન્ટ્રિબ્યુટર્સ નથી.',
+  'This is a daily, holdings-based estimate—not an official AMC attribution. It uses the latest portfolio disclosure available before the NAV date and official NSE closing prices only for mapped equity holdings.': 'આ દૈનિક, હોલ્ડિંગ્સ આધારિત અંદાજ છે—સત્તાવાર AMC એટ્રિબ્યુશન નથી. તે NAV તારીખ પહેલાં ઉપલબ્ધ તાજેતરના પોર્ટફોલિયો ડિસ્ક્લોઝર અને માત્ર મેપ કરેલી ઇક્વિટી હોલ્ડિંગ્સ માટે સત્તાવાર NSE ક્લોઝિંગ પ્રાઇસનો ઉપયોગ કરે છે.',
+  'Market sector pulse': 'માર્કેટ સેક્ટર પલ્સ', 'How the overall market’s sectors moved': 'ઓવરઓલ માર્કેટના સેક્ટર્સ કેવી રીતે બદલાયા', 'NSE closing report': 'NSE ક્લોઝિંગ રિપોર્ટ', 'These are the daily moves of broad NSE sector indices, independent of this fund. They provide the market backdrop for the holdings analysis above.': 'આ વ્યાપક NSE સેક્ટર ઇન્ડેક્સના દૈનિક ફેરફારો છે, આ ફંડથી સ્વતંત્ર. તે ઉપરના હોલ્ડિંગ્સ વિશ્લેષણ માટે માર્કેટ સંદર્ભ આપે છે.',
+  'Read the market context below.': 'નીચે માર્કેટ સંદર્ભ વાંચો.', 'Headlines are useful context, not a proven cause of a sector or fund move.': 'હેડલાઇન્સ ઉપયોગી સંદર્ભ છે, સેક્ટર અથવા ફંડ ફેરફારનું સાબિત કારણ નથી.', 'Market context': 'માર્કેટ સંદર્ભ', 'What was being discussed around the day’s biggest sector moves': 'દિવસના સૌથી મોટા સેક્ટર ફેરફારો વિશે શું ચર્ચાયું', 'Headline context': 'હેડલાઇન સંદર્ભ', 'These headlines provide context for the strongest and weakest sectors. They do not prove the reason for a sector move or this fund’s NAV change.': 'આ હેડલાઇન્સ સૌથી મજબૂત અને નબળા સેક્ટર્સ માટે સંદર્ભ આપે છે. તે સેક્ટર ફેરફાર અથવા આ ફંડના NAV ફેરફારનું કારણ સાબિત કરતી નથી.', 'No dated sector-specific headline was available from the news feed.': 'ન્યૂઝ ફીડમાંથી તારીખવાળી સેક્ટર-સ્પેસિફIC હેડલાઇન ઉપલબ્ધ નથી.',
+  'Reference benchmark': 'રેફરન્સ બેન્ચમાર્ક', 'Scale, cost & disclosure': 'સ્કેલ, ખર્ચ અને ડિસ્ક્લોઝર', 'Source observations': 'સોર્સ અવલોકનો', 'Calculated context stays in your browser': 'ગણાયેલ સંદર્ભ તમારા બ્રાઉઝરમાં રહે છે', 'Loading AAUM and TER source history…': 'AAUM અને TER સોર્સ હિસ્ટ્રી લોડ થઈ રહી છે…', 'Latest reported AAUM': 'તાજેતરનું રિપોર્ટેડ AAUM', 'AAUM movement': 'AAUM ફેરફાર',
+  'AAUM uses AMFI’s reported average AUM, not month-end AUM. TER is already reflected in NAV and is shown here as a separate cost observation.': 'AAUMમાં AMFI દ્વારા રિપોર્ટ કરેલું સરેરાશ AUM વપરાય છે, મહિના અંતનું AUM નહીં. TER પહેલેથી NAVમાં પ્રતિબિંબિત છે અને અહીં અલગ ખર્ચ અવલોકન તરીકે બતાવ્યું છે.', 'Fund management & exit load': 'ફંડ મેનેજમેન્ટ અને એક્ઝિટ લોડ', 'Exit load': 'એક્ઝિટ લોડ', 'Always check the current scheme information document before transacting.': 'ટ્રાન્ઝેક્શન કરતાં પહેલાં હંમેશા વર્તમાન સ્કીમ ઇન્ફોર્મેશન ડોક્યુમેન્ટ તપાસો.', 'Not stated': 'જણાવેલ નથી', 'No manager record was found in this factsheet.': 'આ ફેક્ટશીટમાં કોઈ મેનેજર રેકોર્ડ મળ્યો નથી.',
+  'The details above are reported by the AMC, plan-linked to the scheme, and retained with their factsheet date.': 'ઉપરની વિગતો AMC દ્વારા રિપોર્ટ કરવામાં આવી છે, સ્કીમ સાથે પ્લાન-લિંક છે અને ફેક્ટશીટ તારીખ સાથે રાખવામાં આવી છે.', 'Return snapshot': 'રિટર્ન સ્નેપશોટ', 'Latest NAV date': 'તાજેતરની NAV તારીખ', 'annualised': 'વાર્ષિકીકૃત', 'Total return unavailable': 'કુલ રિટર્ન ઉપલબ્ધ નથી', 'Fund vs benchmark': 'ફંડ vs બેન્ચમાર્ક', 'Period': 'સમયગાળો', 'Benchmark': 'બેન્ચમાર્ક', 'Outperformance': 'આઉટપરફોર્મન્સ',
+  'Fund NAV and benchmark TRI are source observations; all returns and outperformance are calculated in your browser.': 'ફંડ NAV અને બેન્ચમાર્ક TRI સોર્સ અવલોકનો છે; તમામ રિટર્ન્સ અને આઉટપરફોર્મન્સ તમારા બ્રાઉઝરમાં ગણાય છે.', 'Benchmark comparison': 'બેન્ચમાર્ક તુલના', 'How the fund behaved on the way': 'ફંડ સફરમાં કેવી રીતે વર્ત્યું', 'Maximum drawdown': 'મહત્તમ ડ્રોડાઉન', 'Fund’s largest fall from a prior peak': 'અગાઉના પીકથી ફંડનો સૌથી મોટો ઘટાડો', 'Benchmark drawdown': 'બેન્ચમાર્ક ડ્રોડાઉન', 'On the same aligned date range': 'સમાન મેળ ખાતી તારીખ રેન્જ પર', 'Annualised volatility': 'વાર્ષિકીકૃત વોલેટિલિટી', 'How much the fund’s daily returns moved': 'ફંડના દૈનિક રિટર્ન્સ કેટલા બદલાયા', 'Sharpe ratio': 'શાર્પે રેશિયો', 'Beta': 'બીટા', 'Tracking error': 'ટ્રેકિંગ એરર', 'Upside capture': 'અપસાઇડ કૅપ્ચર', 'Downside capture': 'ડાઉનસાઇડ કૅપ્ચર', 'Category upside capture': 'કેટેગરી અપસાઇડ કૅપ્ચર', 'Category downside capture': 'કેટેગરી ડાઉનસાઇડ કૅપ્ચર', 'Below 100% means less of the category fall': '100%થી નીચે એટલે કેટેગરીના ઘટાડામાં ઓછો ઘટાડો',
+  'Rate, credit & cost view': 'રેટ, ક્રેડિટ અને ખર્ચ વ્યૂ', 'Current source data': 'વર્તમાન સોર્સ ડેટા', 'Latest mapped portfolio disclosure': 'તાજેતરનું મેપ કરેલું પોર્ટફોલિયો ડિસ્ક્લોઝર', 'Latest AMFI daily disclosure': 'તાજેતરનું AMFI દૈનિક ડિસ્ક્લોઝર', 'Annualised daily NAV volatility': 'વાર્ષિકીકૃત દૈનિક NAV વોલેટિલિટી', 'Uses the RBI Repo Rate baseline': 'RBI રેપો રેટ બેઝલાઇનનો ઉપયોગ કરે છે', 'Interest-rate sensitivity': 'વ્યાજ દર સંવેદનશીલતા', 'Portfolio yield reported by the AMC': 'AMC દ્વારા રિપોર્ટેડ પોર્ટફોલિયો યીલ્ડ', 'Weighted time to receive cash flows': 'કૅશ ફ્લો મેળવવાનો વેઇટેડ સમય', 'AMC-reported volatility measure': 'AMC દ્વારા રિપોર્ટેડ વોલેટિલિટી મેટ્રિક',
+  'These are factsheet values, not estimates from the holdings table. Their calculation methodology is the AMC’s published methodology.': 'આ ફેક્ટશીટના મૂલ્યો છે, હોલ્ડિંગ્સ ટેબલના અંદાજ નથી. તેમની ગણતરી પદ્ધતિ AMCની પ્રકાશિત પદ્ધતિ છે.', 'What the plan choice cost': 'પ્લાનની પસંદગીનો ખર્ચ', 'Investment amount': 'રોકાણની રકમ', 'Direct Growth value': 'ડાયરેક્ટ ગ્રોથ વેલ્યુ', 'Regular Growth value': 'રેગ્યુલર ગ્રોથ વેલ્યુ', 'Direct is ahead by': 'ડાયરેક્ટ આગળ છે', 'Historical NAV is not loaded yet. Returns will appear here once the archive import is complete.': 'હિસ્ટોરિકલ NAV હજુ લોડ થયું નથી. આર્કાઇવ ઇમ્પોર્ટ પૂર્ણ થયા પછી રિટર્ન્સ અહીં દેખાશે.', 'Average rolling returns': 'સરેરાશ રોલિંગ રિટર્ન્સ', 'Annualised average across every available rolling window': 'દરેક ઉપલબ્ધ રોલિંગ વિન્ડોમાં વાર્ષિકીકૃત સરેરાશ', 'Fund lead': 'ફંડ લીડ',
+  'Choose language': 'ભાષા પસંદ કરો', 'Search a user by name, username, or email': 'નામ, યુઝરનેમ અથવા ઈમેઇલથી યુઝર શોધો', 'Category quartiles': 'કેટેગરી ક્વાર્ટાઇલ્સ', 'Quartile return period': 'ક્વાર્ટાઇલ રિટર્ન સમયગાળો', 'Quartile return basis': 'ક્વાર્ટાઇલ રિટર્ન આધાર', 'Fund comparison': 'ફંડ તુલના', 'Search a scheme to add': 'ઉમેરવા માટે સ્કીમ શોધો', 'Selected-fund NAV growth chart': 'પસંદ કરેલા ફંડનો NAV ગ્રોથ ચાર્ટ', 'Remove scheme': 'સ્કીમ દૂર કરો', 'Fund consistency journey': 'ફંડ કન્સિસ્ટન્સી સફર', 'Funds not included in category benchmark comparison': 'કેટેગરી બેન્ચમાર્ક તુલનામાં સામેલ ન થયેલા ફંડ્સ', 'Search a scheme with a portfolio disclosure': 'પોર્ટફોલિયો ડિસ્ક્લોઝર ધરાવતી સ્કીમ શોધો', 'Search a scheme with portfolio disclosures': 'પોર્ટફોલિયો ડિસ્ક્લોઝર્સ ધરાવતી સ્કીમ શોધો', 'Search an equity scheme': 'ઇક્વિટી સ્કીમ શોધો', 'NAV movement summary': 'NAV ફેરફાર સારાંશ', 'Overall market sector pulse': 'ઓવરઓલ માર્કેટ સેક્ટર પલ્સ', 'Sector news context': 'સેક્ટર ન્યૂઝ સંદર્ભ', 'Scheme detail': 'સ્કીમ વિગત', 'Fund management and exit load': 'ફંડ મેનેજમેન્ટ અને એક્ઝિટ લોડ', 'IDCW return availability': 'IDCW રિટર્ન ઉપલબ્ધતા', 'Fund versus benchmark comparison': 'ફંડ વિરુદ્ધ બેન્ચમાર્ક તુલના', 'Fund versus benchmark availability': 'ફંડ વિરુદ્ધ બેન્ચમાર્ક ઉપલબ્ધતા', 'Risk and resilience analysis': 'રિસ્ક અને રિઝિલિયન્સ વિશ્લેષણ', 'Risk and resilience availability': 'રિસ્ક અને રિઝિલિયન્સ ઉપલબ્ધતા', 'Debt fund snapshot': 'ડેટ ફંડ સ્નેપશોટ', 'Direct versus Regular plan cost visualiser': 'ડાયરેક્ટ વિરુદ્ધ રેગ્યુલર પ્લાન ખર્ચ વિઝ્યુઅલાઇઝર', 'Portfolio holdings': 'પોર્ટફોલિયો હોલ્ડિંગ્સ', 'NAV history chart': 'NAV હિસ્ટ્રી ચાર્ટ', 'Scheme search': 'સ્કીમ શોધ',
+  'is pending Super Admin approval.': 'સુપર એડમિનની મંજૂરીની રાહમાં છે.', 'Your access is approved. Sign in using': 'તમારી ઍક્સેસ મંજૂર છે. આથી સાઇન ઇન કરો', 'New accounts stay pending until you approve them. You can suspend approved accounts at any time.': 'નવા એકાઉન્ટ્સ તમે મંજૂર કરો ત્યાં સુધી પેન્ડિંગ રહે છે. મંજૂર એકાઉન્ટને તમે ગમે ત્યારે સસ્પેન્ડ કરી શકો છો.', 'Loading access requests...': 'ઍક્સેસ વિનંતીઓ લોડ થઈ રહી છે...', 'No access requests yet.': 'હજુ કોઈ ઍક્સેસ વિનંતીઓ નથી.', 'Basic internal activity': 'મૂળભૂત આંતરિક પ્રવૃત્તિ', 'No searches, scheme selections, passwords, or IP addresses stored': 'કોઈ સર્ચ, સ્કીમ પસંદગી, પાસવર્ડ અથવા IP એડ્રેસ સ્ટોર થતા નથી', 'Logged in or opened a section': 'લોગિન કર્યું અથવા સેક્શન ખોલ્યું', 'Successful sign-ins': 'સફળ સાઇન-ઇન્સ', 'Login, logout, or section visit': 'લોગિન, લોગઆઉટ અથવા સેક્શન વિઝિટ', 'Scheme': 'સ્કીમ', '1Y alpha': '1Y આલ્ફા', '3Y alpha': '3Y આલ્ફા', '5Y alpha': '5Y આલ્ફા', 'Benchmark:': 'બેન્ચમાર્ક:', '← All schemes': '← બધી સ્કીમ્સ', 'CAGR': 'CAGR', 'Holding-level yield, residual maturity and credit quality are calculated below when a mapped monthly portfolio disclosure is available.': 'મેપ કરેલું માસિક પોર્ટફોલિયો ડિસ્ક્લોઝર ઉપલબ્ધ હોય ત્યારે હોલ્ડિંગ લેવલ યીલ્ડ, રેસિડ્યુઅલ મેચ્યોરિટી અને ક્રેડિટ ક્વૉલિટી નીચે ગણાય છે.',
+  'Could not sign in.': 'સાઇન ઇન થઈ શક્યું નથી.', 'Could not submit your access request.': 'તમારી ઍક્સેસ વિનંતી મોકલી શકાઈ નથી.', 'Your access request is awaiting Super Admin approval.': 'તમારી ઍક્સેસ વિનંતી સુપર એડમિનની મંજૂરીની રાહમાં છે.', 'This account does not have access. Contact the Super Admin.': 'આ એકાઉન્ટ પાસે ઍક્સેસ નથી. સુપર એડમિનનો સંપર્ક કરો.', 'Invalid username or password.': 'યુઝરનેમ અથવા પાસવર્ડ ખોટો છે.', 'Username is already in use.': 'આ યુઝરનેમ પહેલેથી ઉપયોગમાં છે.', 'Sign-up complete. Your account is pending Super Admin approval.': 'સાઇન અપ પૂર્ણ. તમારું એકાઉન્ટ સુપર એડમિનની મંજૂરીની રાહમાં છે.', 'Your sign-up as': 'તમારું સાઇન અપ', 'An IDCW plan’s NAV falls when cash is distributed. Correct investor returns require the complete distribution cash-flow history, so NAV change alone is not presented as return.': 'કૅશ ડિસ્ટ્રિબ્યુટ થાય ત્યારે IDCW પ્લાનનું NAV ઘટે છે. સાચા રોકાણકાર રિટર્ન માટે સંપૂર્ણ ડિસ્ટ્રિબ્યુશન કૅશ-ફ્લો હિસ્ટ્રી જરૂરી છે, તેથી માત્ર NAV ફેરફારને રિટર્ન તરીકે રજૂ કરાતો નથી.'
+};
+const nodeSources = new WeakMap();
+const attributeSources = new WeakMap();
+let translatingCopy = false;
+const nameWordMap = {
+  fund: 'ફંડ', funds: 'ફંડ્સ', mutual: 'મ્યુચ્યુઅલ', plan: 'પ્લાન', direct: 'ડાયરેક્ટ', regular: 'રેગ્યુલર', growth: 'ગ્રોથ', option: 'ઓપ્શન', english: 'અંગ્રેજી',
+  hdfc: 'એચડીએફસી', icici: 'આઈસીઆઈસીઆઈ', sbi: 'એસબીઆઈ', axis: 'એક્સિસ', kotak: 'કોટક', tata: 'ટાટા', uti: 'યુટીઆઈ', dsp: 'ડીએસપી',
+  aditya: 'આદિત્ય', birla: 'બિરલા', sun: 'સન', life: 'લાઇફ', nippon: 'નિપ્પોન', india: 'ઇન્ડિયા', mirae: 'મિરાઇ', asset: 'એસેટ',
+  motilal: 'મોતિલાલ', oswal: 'ઓસ્વાલ', parag: 'પરાગ', parikh: 'પરીખ', whiteoak: 'વ્હાઇટઓક', bandhan: 'બંધન', invesco: 'ઇન્વેસ્કો',
+  franklin: 'ફ્રેન્કલિન', templeton: 'ટેમ્પલટન', edelweiss: 'એડેલવાઇસ', canara: 'કેનરા', robeco: 'રોબેકો', baroda: 'બરોડા',
+  quantum: 'ક્વોન્ટમ', quant: 'ક્વોન્ટ', ppfas: 'પીપીએફએએસ', bajaj: 'બજાજ', finserv: 'ફિનસર્વ', union: 'યુનિયન', bank: 'બેંક',
+  nse: 'એનએસઈ', bse: 'બીએસઈ', nifty: 'નિફ્ટી', sensex: 'સેન્સેક્સ', index: 'ઇન્ડેક્સ', total: 'ટોટલ', return: 'રિટર્ન', tri: 'ટીઆરઆઈ', nav: 'એનએવી', aum: 'એયુએમ', aaum: 'એએયુએમ', ter: 'ટીઈઆર', amc: 'એએમસી', sebi: 'સેબી', rbi: 'આરબીઆઈ', cagr: 'સીએજીઆર', idcw: 'આઈડીસીડબ્લ્યુ', ytm: 'વાયટીએમ',
+  flexi: 'ફ્લેક્સી', cap: 'કેપ', large: 'લાર્જ', mid: 'મિડ', small: 'સ્મોલ', equity: 'ઇક્વિટી', debt: 'ડેટ', hybrid: 'હાઇબ્રિડ',
+  elss: 'ઈએલએસએસ', tax: 'ટેક્સ', saver: 'સેવર', corporate: 'કોર્પોરેટ', bond: 'બોન્ડ', liquid: 'લિક્વિડ', overnight: 'ઓવરનાઇટ',
+  arbitrage: 'આર્બિટ્રાજ', money: 'મની', market: 'માર્કેટ', short: 'શોર્ટ', medium: 'મિડિયમ', long: 'લોંગ', duration: 'ડ્યુરેશન', gilt: 'ગિલ્ટ',
+  income: 'ઇનકમ', value: 'વેલ્યુ', focused: 'ફોકસ્ડ', multi: 'મલ્ટી', allocation: 'એલોકેશન', balanced: 'બેલેન્સ્ડ', advantage: 'એડવાન્ટેજ',
+  banking: 'બેન્કિંગ', financial: 'ફાઇનાન્સિયલ', services: 'સર્વિસિસ', consumption: 'કન્ઝમ્પ્શન', manufacturing: 'મેન્યુફેક્ચરિંગ', infrastructure: 'ઇન્ફ્રાસ્ટ્રક્ચર',
+  healthcare: 'હેલ્થકેર', technology: 'ટેક્નોલોજી', pharma: 'ફાર્મા', business: 'બિઝનેસ', cycle: 'સાયકલ', commodity: 'કોમોડિટી',
+  january: 'જાન્યુઆરી', february: 'ફેબ્રુઆરી', march: 'માર્ચ', april: 'એપ્રિલ', may: 'મે', june: 'જૂન', july: 'જુલાઈ', august: 'ઓગસ્ટ', september: 'સપ્ટેમ્બર', october: 'ઓક્ટોબર', november: 'નવેમ્બર', december: 'ડિસેમ્બર',
+};
+const protectedNameTokens = new Set(['ISIN']);
+function transliterateFallback(word) {
+  const pairs = [['th', 'થ'], ['sh', 'શ'], ['ch', 'ચ'], ['ph', 'ફ'], ['kh', 'ખ'], ['aa', 'ા'], ['ee', 'ી'], ['oo', 'ૂ'], ['ai', 'ૈ'], ['au', 'ૌ'], ['a', 'અ'], ['e', 'ે'], ['i', 'િ'], ['o', 'ો'], ['u', 'ુ'], ['b', 'બ'], ['c', 'ક'], ['d', 'ડ'], ['f', 'ફ'], ['g', 'ગ'], ['h', 'હ'], ['j', 'જ'], ['k', 'ક'], ['l', 'લ'], ['m', 'મ'], ['n', 'ન'], ['p', 'પ'], ['q', 'ક'], ['r', 'ર'], ['s', 'સ'], ['t', 'ટ'], ['v', 'વ'], ['w', 'વ'], ['x', 'ક્સ'], ['y', 'ય'], ['z', 'ઝ']];
+  let output = word.toLowerCase();
+  for (const [latin, gujarati] of pairs) output = output.replaceAll(latin, gujarati);
+  return output;
+}
+function looksLikeFundName(value) {
+  return /\b(?:fund|mutual|nifty|sensex|index|hdfc|icici|sbi|axis|kotak|aditya|birla|parag|whiteoak|motilal|nippon|tata|mirae|bandhan|invesco|uti|quantum|quant|franklin|dsp|edelweiss|canara|baroda|bajaj|nse|bse|equity|debt|hybrid|flexi|large|mid|small|sectoral|thematic|arbitrage|liquid|money|duration|gilt|income|value|focused|multi|balanced|banking|financial|consumption|manufacturing|healthcare|technology|january|february|march|april|may|june|july|august|september|october|november|december)\b/i.test(value);
+}
+function transliterateName(value) {
+  return String(value).replace(/[A-Za-z]+/g, (word) => {
+    if (protectedNameTokens.has(word.toUpperCase()) || /^[A-Z]{2,}\d*$/.test(word) && !nameWordMap[word.toLowerCase()]) return word;
+    return nameWordMap[word.toLowerCase()] || transliterateFallback(word);
+  });
+}
+function translateCopy(value, element) {
+  if (interfaceLanguage.value !== 'gu') return value;
+  const trimmed = String(value || '').trim();
+  if (gujaratiCopy[trimmed]) return String(value).replace(trimmed, gujaratiCopy[trimmed]);
+  // Codes, emails, URLs and a signed-in username are identifiers, not reader-facing copy.
+  if (/^(?:https?:\/\/|\S+@\S+\.|[A-Z]{2,}\d*[A-Z0-9-]{2,})$/.test(trimmed) || element?.closest('.sign-out')) return value;
+  if (/[A-Za-z]/.test(value)) return transliterateName(value);
+  return String(value)
+    .replace(/^Sign out\s*·/i, 'સાઇન આઉટ ·')
+    .replace(/^Last (\d+) days$/i, 'છેલ્લા $1 દિવસ')
+    .replace(/^Loading access requests\.\.\.$/i, 'ઍક્સેસ વિનંતીઓ લોડ થઈ રહી છે...');
+}
+function translateInterface(root = document.querySelector('#app')) {
+  if (!root) return;
+  translatingCopy = true;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = []; let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  for (const textNode of nodes) {
+    const source = nodeSources.get(textNode) ?? textNode.nodeValue;
+    nodeSources.set(textNode, source);
+    const translated = translateCopy(source, textNode.parentElement);
+    if (textNode.nodeValue !== translated) textNode.nodeValue = translated;
+  }
+  for (const element of root.querySelectorAll('[placeholder],[aria-label],[title]')) {
+    const original = attributeSources.get(element) ?? {};
+    for (const name of ['placeholder', 'aria-label', 'title']) {
+      if (!element.hasAttribute(name)) continue;
+      if (!(name in original)) original[name] = element.getAttribute(name);
+      const translated = translateCopy(original[name], element);
+      if (element.getAttribute(name) !== translated) element.setAttribute(name, translated);
+    }
+    attributeSources.set(element, original);
+  }
+  translatingCopy = false;
+}
+function setInterfaceLanguage(language) {
+  interfaceLanguage.value = language;
+  localStorage.setItem('fund-analysis-language', language);
+}
 
 function excelFileName(label) {
   return `${String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'fund-analysis'}-${new Date().toISOString().slice(0, 10)}.xlsx`;
@@ -1954,15 +2115,26 @@ onMounted(async () => {
     await Promise.all([loadSchemes(), loadCategories()]);
     trackUsage('schemes');
   }
+  document.documentElement.lang = interfaceLanguage.value === 'gu' ? 'gu' : 'en';
+  translateInterface();
+  interfaceObserver = new MutationObserver(() => {
+    if (!translatingCopy) translateInterface();
+  });
+  interfaceObserver.observe(document.querySelector('#app'), { childList: true, subtree: true, characterData: true });
 });
-onBeforeUnmount(() => clearTimeout(searchTimer));
+onBeforeUnmount(() => { clearTimeout(searchTimer); interfaceObserver?.disconnect(); });
 watch(view, (section) => trackUsage(section));
+watch(interfaceLanguage, () => {
+  document.documentElement.lang = interfaceLanguage.value === 'gu' ? 'gu' : 'en';
+  requestAnimationFrame(() => translateInterface());
+});
 </script>
 
 <template>
   <main v-if="!authReady" class="login-shell"><p>Checking secure access…</p></main>
   <main v-else-if="!authenticatedUser" class="login-shell">
     <section class="login-card" aria-label="Sign in">
+      <div class="language-switch" aria-label="Choose language"><button type="button" :class="{ active: interfaceLanguage === 'en' }" @click="setInterfaceLanguage('en')">English</button><button type="button" :class="{ active: interfaceLanguage === 'gu' }" @click="setInterfaceLanguage('gu')">ગુજરાતી</button></div>
       <p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p>
       <template v-if="authMode === 'sign-in'">
       <h1>From NAV<br><em>to Insights.</em></h1>
@@ -2000,7 +2172,7 @@ watch(view, (section) => trackUsage(section));
   </main>
   <main v-if="authenticatedUser" class="shell">
     <header>
-      <div class="app-header-top"><p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p><div class="header-actions"><button v-if="authenticatedRole === 'super_admin'" class="sign-out" @click="showAdminPanel">Admin</button><button class="sign-out" @click="signOut">Sign out · {{ authenticatedUser }}</button></div></div>
+      <div class="app-header-top"><p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p><div class="header-actions"><div class="language-switch compact" aria-label="Choose language"><button type="button" :class="{ active: interfaceLanguage === 'en' }" @click="setInterfaceLanguage('en')">English</button><button type="button" :class="{ active: interfaceLanguage === 'gu' }" @click="setInterfaceLanguage('gu')">ગુજરાતી</button></div><button v-if="authenticatedRole === 'super_admin'" class="sign-out" @click="showAdminPanel">Admin</button><button class="sign-out" @click="signOut">Sign out · {{ authenticatedUser }}</button></div></div>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
       <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button><button :class="{ active: view === 'changes' }" @click="showPortfolioChanges">Portfolio changes</button><button :class="{ active: view === 'drivers' }" @click="showNavDrivers">NAV movement analysis</button></div>
     </header>
