@@ -285,6 +285,33 @@ function assistantNavMovement(schemeCode) {
   return { date: priceDate, disclosure_date: portfolio.as_of_date, positive_drivers: rows.filter((row) => row.estimated_nav_impact_pp > 0).sort((a, b) => b.estimated_nav_impact_pp - a.estimated_nav_impact_pp).slice(0, 8), negative_drivers: rows.filter((row) => row.estimated_nav_impact_pp < 0).sort((a, b) => a.estimated_nav_impact_pp - b.estimated_nav_impact_pp).slice(0, 8) };
 }
 
+function assistantQuartileLabel(category) {
+  return String(category || '').replace(/^(Equity|Debt|Hybrid) Schemes? - /i, '').replace(/^Index Funds - (Equity|Debt) - /i, '').trim();
+}
+
+function assistantQuartile(scheme, years) {
+  const label = assistantQuartileLabel(scheme.category);
+  if (!label) return null;
+  const categories = db.prepare('SELECT DISTINCT category FROM schemes WHERE category IS NOT NULL').all().map((row) => row.category).filter((category) => assistantQuartileLabel(category) === label);
+  if (!categories.length) return null;
+  const rows = db.prepare(`WITH latest AS (SELECT s.scheme_code,s.name,s.amc,s.category,(SELECT nav FROM nav_daily WHERE scheme_code=s.scheme_code ORDER BY date DESC LIMIT 1) latest_nav,(SELECT date FROM nav_daily WHERE scheme_code=s.scheme_code ORDER BY date DESC LIMIT 1) latest_date FROM schemes s WHERE s.category IN (${categories.map(() => '?').join(',')})) SELECT l.*,(SELECT nav FROM nav_daily WHERE scheme_code=l.scheme_code AND date<=date(l.latest_date, printf('-%d years', ?)) ORDER BY date DESC LIMIT 1) start_nav,(SELECT date FROM nav_daily WHERE scheme_code=l.scheme_code AND date<=date(l.latest_date, printf('-%d years', ?)) ORDER BY date DESC LIMIT 1) start_date FROM latest l WHERE latest_nav IS NOT NULL`).all(...categories, years, years)
+    .filter((row) => quartilePlanType(row.name) && row.start_nav > 0 && row.start_date)
+    .map((row) => ({ ...row, value: years === 1 ? ((row.latest_nav / row.start_nav) - 1) * 100 : (Math.pow(row.latest_nav / row.start_nav, 365.2425 / daysBetween(row.start_date, row.latest_date)) - 1) * 100 }))
+    .filter((row) => Number.isFinite(row.value));
+  const families = new Map();
+  for (const row of rows) {
+    const type = quartilePlanType(row.name); const key = `${row.amc}|${planFamily(row.name)}`; const entry = families.get(key) || { direct: null, regular: null };
+    if (!entry[type] || row.latest_date > entry[type].latest_date || (row.latest_date === entry[type].latest_date && explicitPlanPreference(row.name, type) > explicitPlanPreference(entry[type].name, type))) entry[type] = row;
+    families.set(key, entry);
+  }
+  const ranked = [...families.values()].map((entry) => ({ ...entry, name: (entry.direct || entry.regular).name, amc: (entry.direct || entry.regular).amc, ranking_value: (entry.direct || entry.regular).value })).sort((a, b) => b.ranking_value - a.ranking_value);
+  const displayed = []; const amcs = new Set();
+  for (const entry of ranked) if (entry.amc && !amcs.has(entry.amc) && displayed.length < 20) { displayed.push(entry); amcs.add(entry.amc); }
+  const base = Math.floor(displayed.length / 4); const remainder = displayed.length % 4; let offset = 0;
+  for (let index = 0; index < 4; index += 1) { const size = base + (index < remainder ? 1 : 0); const group = displayed.slice(offset, offset + size); offset += size; if (group.some((entry) => entry.direct?.scheme_code === scheme.scheme_code || entry.regular?.scheme_code === scheme.scheme_code)) return { period: years === 1 ? '1Y return' : `${years}Y CAGR`, basis: 'Net return', subcategory: label, quartile: `Q${index + 1}`, displayed_amcs: displayed.length, fund_return_percent: group.find((entry) => entry.direct?.scheme_code === scheme.scheme_code || entry.regular?.scheme_code === scheme.scheme_code).ranking_value }; }
+  return null;
+}
+
 function assistantSchemeMetrics(scheme, includeHoldings) {
   const navHistory = db.prepare('SELECT date,nav FROM nav_daily WHERE scheme_code=? ORDER BY date').all(scheme.scheme_code);
   const points = navHistory.map((row) => ({ date: row.date, value: row.nav }));
@@ -336,7 +363,10 @@ function schemeContextForAssistant(question) {
     if (schemes.length >= (isComparison ? 2 : 1)) break;
   }
   const selected = schemes.map(({ assistant_match_score, assistant_plan_score, ...scheme }) => ({ ...scheme, verified_metrics: assistantSchemeMetrics(scheme, includeHoldings) }));
-  return { schemes: selected, overlap: /\b(overlap|common holding|common holdings)\b/i.test(question) ? assistantPortfolioOverlap(selected) : null, nav_movement: /\b(nav movement|nav driver|moved nav|why.*nav|nav.*why)\b/i.test(question) && selected[0] ? assistantNavMovement(selected[0].scheme_code) : null };
+  const quartileYears = /\b5\s*(?:year|yr)|5y\b/i.test(question) ? 5 : /\b3\s*(?:year|yr)|3y\b/i.test(question) ? 3 : 1;
+  const asksQuartile = /\b(quartile|q[1-4]|rank)\b/i.test(question);
+  const asksGrossQuartile = /\b(gross|before ter)\b/i.test(question);
+  return { schemes: selected, overlap: /\b(overlap|common holding|common holdings)\b/i.test(question) ? assistantPortfolioOverlap(selected) : null, nav_movement: /\b(nav movement|nav driver|moved nav|why.*nav|nav.*why)\b/i.test(question) && selected[0] ? assistantNavMovement(selected[0].scheme_code) : null, quartiles: asksQuartile ? (asksGrossQuartile ? { status: 'unavailable', reason: 'Gross-before-TER quartile coverage is not yet connected to the assistant.' } : selected.map((scheme) => ({ scheme_code: scheme.scheme_code, name: scheme.name, result: assistantQuartile(scheme, quartileYears) }))) : null };
 }
 
 app.post('/api/assistant/chat', async (request, response) => {
@@ -351,6 +381,7 @@ app.post('/api/assistant/chat', async (request, response) => {
     matched_schemes: schemeContext,
     verified_pair_analysis: assistantData.overlap,
     verified_nav_movement: assistantData.nav_movement,
+    verified_quartiles: assistantData.quartiles,
     note: 'Only the supplied records are verified dashboard data. A missing field means it is not available in the dashboard.',
   });
   const controller = new AbortController();
@@ -372,8 +403,12 @@ app.post('/api/assistant/chat', async (request, response) => {
     });
     const payload = await ollamaResponse.json().catch(() => ({}));
     if (!ollamaResponse.ok || !payload?.message?.content) throw new Error(payload?.error || `Local AI returned HTTP ${ollamaResponse.status}`);
+    const answer = String(payload.message.content).trim();
+    db.prepare("DELETE FROM app_assistant_chats WHERE created_at < datetime('now', '-90 days')").run();
+    db.prepare('INSERT INTO app_assistant_chats (user_id,question,answer,language,verified_data_json) VALUES (?,?,?,?,?)')
+      .run(session.user.user_id, question, answer, language === 'Gujarati' ? 'gu' : 'en', JSON.stringify(assistantData));
     logUsage(session.user.user_id, 'page_view', 'assistant');
-    response.json({ answer: String(payload.message.content).trim(), matchedSchemes: schemeContext.map(({ scheme_code, name }) => ({ scheme_code, name })), verified: assistantData });
+    response.json({ answer, matchedSchemes: schemeContext.map(({ scheme_code, name }) => ({ scheme_code, name })), verified: assistantData });
   } catch (error) {
     const unavailable = error.name === 'AbortError'
       ? 'The local AI took too long to respond. Please try again.'
@@ -382,6 +417,17 @@ app.post('/api/assistant/chat', async (request, response) => {
   } finally {
     clearTimeout(timeout);
   }
+});
+
+app.get('/api/assistant/history', (request, response) => {
+  const session = activeSession(request);
+  db.prepare("DELETE FROM app_assistant_chats WHERE created_at < datetime('now', '-90 days')").run();
+  const chats = db.prepare(`SELECT chat_id,question,answer,language,verified_data_json,created_at
+    FROM app_assistant_chats WHERE user_id=? ORDER BY chat_id DESC LIMIT 50`).all(session.user.user_id).reverse().map((chat) => ({
+    ...chat,
+    verified: chat.verified_data_json ? JSON.parse(chat.verified_data_json) : null,
+  }));
+  response.json({ retention_days: 90, chats });
 });
 
 app.get('/api/admin/users', requireSuperAdmin, (request, response) => {

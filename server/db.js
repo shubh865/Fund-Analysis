@@ -376,6 +376,20 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_app_usage_events_created_at ON app_usage_events(created_at);
   CREATE INDEX IF NOT EXISTS idx_app_usage_events_user_id ON app_usage_events(user_id);
+
+  -- Private local assistant history. Conversations remain on this database
+  -- and are retained only for a limited internal-review period.
+  CREATE TABLE IF NOT EXISTS app_assistant_chats (
+    chat_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES app_users(user_id),
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    language TEXT NOT NULL CHECK(language IN ('en', 'gu')),
+    verified_data_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_app_assistant_chats_user_created
+    ON app_assistant_chats(user_id, created_at DESC);
 `);
 
 const debtQuantColumns = db.prepare('PRAGMA table_info(scheme_debt_quant_snapshots)').all().map((column) => column.name);

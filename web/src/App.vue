@@ -102,6 +102,7 @@ const assistantQuestion = ref('');
 const assistantMessages = ref([]);
 const assistantLoading = ref(false);
 const assistantError = ref('');
+const assistantHistoryLoaded = ref(false);
 
 function formatAssistantPercent(value) {
   return Number.isFinite(value) ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` : '—';
@@ -490,6 +491,22 @@ async function askAssistant() {
   }
 }
 
+async function loadAssistantHistory() {
+  if (assistantHistoryLoaded.value) return;
+  try {
+    const response = await fetch('/api/assistant/history');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Could not load your saved chats.');
+    assistantMessages.value = payload.chats.flatMap((chat) => [
+      { role: 'user', text: chat.question },
+      { role: 'assistant', text: chat.answer, verified: chat.verified, schemes: chat.verified?.schemes?.map((scheme) => ({ scheme_code: scheme.scheme_code, name: scheme.name })) || [] },
+    ]);
+    assistantHistoryLoaded.value = true;
+  } catch (requestError) {
+    assistantError.value = requestError.message;
+  }
+}
+
 const displaySchemes = computed(() => schemes.value.slice(0, 50));
 
 async function loadSchemes() {
@@ -815,6 +832,7 @@ function showAssistant() {
   closeDetail();
   view.value = 'assistant';
   assistantError.value = '';
+  loadAssistantHistory();
 }
 
 function showSchemes() {
@@ -2217,7 +2235,7 @@ watch(interfaceLanguage, () => {
     </header>
 
     <section v-if="view === 'assistant' && !selected" class="card assistant-panel" aria-label="Fund Insights assistant">
-      <div class="compare-intro"><div><p class="eyebrow">Local AI assistant</p><h2>Ask about your dashboard data</h2><p>Answers use only matched data from this local dashboard. It does not give investment advice.</p></div><span>Private · local</span></div>
+      <div class="compare-intro"><div><p class="eyebrow">Local AI assistant</p><h2>Ask about your dashboard data</h2><p>Answers use only matched data from this local dashboard. It does not give investment advice.</p></div><span>Private · 90-day history</span></div>
       <div v-if="!assistantMessages.length" class="assistant-starters"><button type="button" @click="assistantQuestion = 'Explain NAV in simple words'">Explain NAV simply</button><button type="button" @click="assistantQuestion = 'What information is available for HDFC Flexi Cap Fund?'">Ask about a scheme</button><button type="button" @click="assistantQuestion = 'What does modified duration mean?'">Explain a debt metric</button></div>
       <div v-if="assistantMessages.length" class="assistant-conversation"><article v-for="(message, index) in assistantMessages" :key="index" :class="message.role"><small>{{ message.role === 'user' ? 'You' : 'Fund Insights' }}</small><div v-if="message.verified?.schemes?.length" class="assistant-verified"><strong>Verified dashboard data</strong><div v-for="scheme in message.verified.schemes" :key="scheme.scheme_code"><b>{{ scheme.name }}</b><span>NAV {{ scheme.verified_metrics?.latest_nav?.nav?.toFixed(4) || '—' }} · {{ scheme.verified_metrics?.latest_nav?.date || '—' }}</span><span>1Y {{ formatAssistantPercent(scheme.verified_metrics?.point_to_point_returns?.one_year?.percent) }} · 3Y {{ formatAssistantPercent(scheme.verified_metrics?.point_to_point_returns?.three_year_cagr?.percent) }} · 5Y {{ formatAssistantPercent(scheme.verified_metrics?.point_to_point_returns?.five_year_cagr?.percent) }}</span></div></div><div v-if="message.verified?.overlap" class="assistant-verified"><strong>Verified overlap</strong><span>{{ message.verified.overlap.common_holding_overlap_percent.toFixed(2) }}% common holding overlap</span></div><p>{{ message.text }}</p><div v-if="message.schemes?.length" class="assistant-schemes"><button v-for="scheme in message.schemes" :key="scheme.scheme_code" type="button" @click="openScheme(scheme.scheme_code)">Open {{ scheme.name }}</button></div></article><p v-if="assistantLoading" class="message">Thinking locally…</p></div>
       <p v-if="assistantError" class="message error">{{ assistantError }}</p>
