@@ -98,6 +98,14 @@ const adminLoading = ref(false);
 const adminError = ref('');
 const usageSearch = ref('');
 const adminUsage = ref({ days: 30, totals: { events: 0, active_users: 0, logins: 0 }, daily: [], events: { login: [], logout: [], page_view: [] } });
+const assistantQuestion = ref('');
+const assistantMessages = ref([]);
+const assistantLoading = ref(false);
+const assistantError = ref('');
+
+function formatAssistantPercent(value) {
+  return Number.isFinite(value) ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` : '—';
+}
 const interfaceLanguage = ref(localStorage.getItem('fund-analysis-language') === 'gu' ? 'gu' : 'en');
 let searchTimer;
 let interfaceObserver;
@@ -457,6 +465,31 @@ async function signOut() {
   selected.value = null;
 }
 
+async function askAssistant() {
+  const question = assistantQuestion.value.trim();
+  if (!question || assistantLoading.value) return;
+  assistantError.value = '';
+  assistantMessages.value.push({ role: 'user', text: question });
+  assistantQuestion.value = '';
+  assistantLoading.value = true;
+  try {
+    const response = await fetch('/api/assistant/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, language: interfaceLanguage.value }) });
+    const payload = await response.json();
+    if (response.status === 401) {
+      authenticatedUser.value = '';
+      authenticatedRole.value = '';
+      assistantMessages.value = [];
+      throw new Error('Your secure session was restarted. Please sign in once more.');
+    }
+    if (!response.ok) throw new Error(payload.error || 'Could not get an answer.');
+    assistantMessages.value.push({ role: 'assistant', text: payload.answer, schemes: payload.matchedSchemes || [], verified: payload.verified || null });
+  } catch (requestError) {
+    assistantError.value = requestError.message;
+  } finally {
+    assistantLoading.value = false;
+  }
+}
+
 const displaySchemes = computed(() => schemes.value.slice(0, 50));
 
 async function loadSchemes() {
@@ -776,6 +809,12 @@ function showNavDrivers() {
   closeDetail();
   view.value = 'drivers';
   navDriverResults.value = [];
+}
+
+function showAssistant() {
+  closeDetail();
+  view.value = 'assistant';
+  assistantError.value = '';
 }
 
 function showSchemes() {
@@ -2174,10 +2213,19 @@ watch(interfaceLanguage, () => {
     <header>
       <div class="app-header-top"><p class="eyebrow"><span class="brand-mark">◆</span> Mutual fund analytics</p><div class="header-actions"><div class="language-switch compact" aria-label="Choose language"><button type="button" :class="{ active: interfaceLanguage === 'en' }" @click="setInterfaceLanguage('en')">English</button><button type="button" :class="{ active: interfaceLanguage === 'gu' }" @click="setInterfaceLanguage('gu')">ગુજરાતી</button></div><button v-if="authenticatedRole === 'super_admin'" class="sign-out" @click="showAdminPanel">Admin</button><button class="sign-out" @click="signOut">Sign out · {{ authenticatedUser }}</button></div></div>
       <h1>Explore every scheme.<br><em>Start with its NAV.</em></h1>
-      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button><button :class="{ active: view === 'changes' }" @click="showPortfolioChanges">Portfolio changes</button><button :class="{ active: view === 'drivers' }" @click="showNavDrivers">NAV movement analysis</button></div>
+      <div class="view-switch"><button :class="{ active: view === 'schemes' }" @click="showSchemes">Schemes</button><button :class="{ active: view === 'quartiles' }" @click="showQuartiles">Quartiles</button><button :class="{ active: view === 'peers' }" @click="showPeerAnalysis">Peer analysis</button><button :class="{ active: view === 'overlap' }" @click="showPortfolioOverlap">Portfolio overlap</button><button :class="{ active: view === 'changes' }" @click="showPortfolioChanges">Portfolio changes</button><button :class="{ active: view === 'drivers' }" @click="showNavDrivers">NAV movement analysis</button><button :class="{ active: view === 'assistant' }" @click="showAssistant">AI assistant</button></div>
     </header>
 
-    <section v-if="view === 'admin' && authenticatedRole === 'super_admin'" class="card admin-panel" aria-label="Access control">
+    <section v-if="view === 'assistant' && !selected" class="card assistant-panel" aria-label="Fund Insights assistant">
+      <div class="compare-intro"><div><p class="eyebrow">Local AI assistant</p><h2>Ask about your dashboard data</h2><p>Answers use only matched data from this local dashboard. It does not give investment advice.</p></div><span>Private · local</span></div>
+      <div v-if="!assistantMessages.length" class="assistant-starters"><button type="button" @click="assistantQuestion = 'Explain NAV in simple words'">Explain NAV simply</button><button type="button" @click="assistantQuestion = 'What information is available for HDFC Flexi Cap Fund?'">Ask about a scheme</button><button type="button" @click="assistantQuestion = 'What does modified duration mean?'">Explain a debt metric</button></div>
+      <div v-if="assistantMessages.length" class="assistant-conversation"><article v-for="(message, index) in assistantMessages" :key="index" :class="message.role"><small>{{ message.role === 'user' ? 'You' : 'Fund Insights' }}</small><div v-if="message.verified?.schemes?.length" class="assistant-verified"><strong>Verified dashboard data</strong><div v-for="scheme in message.verified.schemes" :key="scheme.scheme_code"><b>{{ scheme.name }}</b><span>NAV {{ scheme.verified_metrics?.latest_nav?.nav?.toFixed(4) || '—' }} · {{ scheme.verified_metrics?.latest_nav?.date || '—' }}</span><span>1Y {{ formatAssistantPercent(scheme.verified_metrics?.point_to_point_returns?.one_year?.percent) }} · 3Y {{ formatAssistantPercent(scheme.verified_metrics?.point_to_point_returns?.three_year_cagr?.percent) }} · 5Y {{ formatAssistantPercent(scheme.verified_metrics?.point_to_point_returns?.five_year_cagr?.percent) }}</span></div></div><div v-if="message.verified?.overlap" class="assistant-verified"><strong>Verified overlap</strong><span>{{ message.verified.overlap.common_holding_overlap_percent.toFixed(2) }}% common holding overlap</span></div><p>{{ message.text }}</p><div v-if="message.schemes?.length" class="assistant-schemes"><button v-for="scheme in message.schemes" :key="scheme.scheme_code" type="button" @click="openScheme(scheme.scheme_code)">Open {{ scheme.name }}</button></div></article><p v-if="assistantLoading" class="message">Thinking locally…</p></div>
+      <p v-if="assistantError" class="message error">{{ assistantError }}</p>
+      <form class="assistant-form" @submit.prevent="askAssistant"><input v-model="assistantQuestion" maxlength="800" placeholder="Ask a question about a fund, holding, NAV, portfolio or debt metric" :disabled="assistantLoading"><button type="submit" :disabled="assistantLoading || !assistantQuestion.trim()">{{ assistantLoading ? 'Thinking…' : 'Ask' }}</button></form>
+      <p class="compare-footnote">Your question is sent only to Ollama running on this computer. Only a small, relevant dashboard extract is shared with the model—not the full database.</p>
+    </section>
+
+    <section v-else-if="view === 'admin' && authenticatedRole === 'super_admin'" class="card admin-panel" aria-label="Access control">
       <div class="compare-intro"><div><p class="eyebrow">Super Admin</p><h2>Access control</h2><p>New accounts stay pending until you approve them. You can suspend approved accounts at any time.</p></div><button :disabled="adminLoading" @click="Promise.all([loadAdminUsers(), loadAdminUsage()])">{{ adminLoading ? 'Refreshing...' : 'Refresh' }}</button></div>
       <p v-if="adminError" class="message error">{{ adminError }}</p>
       <p v-else-if="adminLoading" class="message">Loading access requests...</p>

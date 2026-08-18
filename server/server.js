@@ -25,6 +25,8 @@ function loadLocalEnvironment() {
 }
 
 loadLocalEnvironment();
+const localLlmBaseUrl = (process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
+const localLlmModel = process.env.LOCAL_LLM_MODEL || 'gemma3:4b';
 const authUsername = process.env.AUTH_USERNAME || '';
 const authPassword = process.env.AUTH_PASSWORD || '';
 if (!validConfiguredAdmin(authUsername, authPassword)) {
@@ -184,10 +186,202 @@ app.use('/api', (request, response, next) => {
 app.post('/api/usage/page-view', (request, response) => {
   const session = activeSession(request);
   const section = String(request.body?.section || '').trim().toLowerCase();
-  const allowedSections = new Set(['schemes', 'quartiles', 'peers', 'overlap', 'changes', 'drivers', 'admin']);
+  const allowedSections = new Set(['schemes', 'quartiles', 'peers', 'overlap', 'changes', 'drivers', 'assistant', 'admin']);
   if (!allowedSections.has(section)) return response.status(400).json({ error: 'Unknown dashboard section.' });
   logUsage(session.user.user_id, 'page_view', section);
   response.status(204).end();
+});
+
+function assistantDateYearsEarlier(dateString, years) {
+  const date = new Date(`${dateString}T00:00:00Z`);
+  const month = date.getUTCMonth();
+  date.setUTCFullYear(date.getUTCFullYear() - years);
+  if (date.getUTCMonth() !== month) date.setUTCDate(0);
+  return date.toISOString().slice(0, 10);
+}
+
+function assistantLatestOnOrBefore(points, dateString) {
+  for (let index = points.length - 1; index >= 0; index -= 1) if (points[index].date <= dateString) return points[index];
+  return null;
+}
+
+function assistantPreviousPoint(points, dateString) {
+  const index = points.findIndex((point) => point.date === dateString);
+  return index > 0 ? points[index - 1] : null;
+}
+
+function assistantReturn(points, years) {
+  const end = points.at(-1);
+  const start = end && assistantLatestOnOrBefore(points, assistantDateYearsEarlier(end.date, years));
+  if (!end || !start || end.date === start.date || start.value <= 0 || end.value <= 0) return null;
+  const days = daysBetween(start.date, end.date);
+  const total = end.value / start.value;
+  const value = years === 1 ? (total - 1) * 100 : (Math.pow(total, 365.2425 / days) - 1) * 100;
+  return Number.isFinite(value) ? { percent: value, start_date: start.date, end_date: end.date } : null;
+}
+
+function assistantConsistency(fundHistory, benchmarkHistory) {
+  const benchmarkByDate = new Map(benchmarkHistory.map((point) => [point.date, point.value]));
+  const metrics = {};
+  for (const years of [1, 2, 3, 4, 5]) {
+    const fundReturns = [];
+    const benchmarkReturns = [];
+    let wins = 0;
+    for (const end of fundHistory) {
+      const benchmarkEnd = benchmarkByDate.get(end.date);
+      if (!Number.isFinite(benchmarkEnd)) continue;
+      let start = assistantLatestOnOrBefore(fundHistory, assistantDateYearsEarlier(end.date, years));
+      while (start && !benchmarkByDate.has(start.date)) start = assistantPreviousPoint(fundHistory, start.date);
+      if (!start || start.date === end.date || start.nav <= 0) continue;
+      const days = daysBetween(start.date, end.date);
+      if (days <= 0) continue;
+      const annualisation = 365.2425 / days;
+      const fundReturn = (Math.pow(end.nav / start.nav, annualisation) - 1) * 100;
+      const benchmarkReturn = (Math.pow(benchmarkEnd / benchmarkByDate.get(start.date), annualisation) - 1) * 100;
+      if (!Number.isFinite(fundReturn) || !Number.isFinite(benchmarkReturn)) continue;
+      fundReturns.push(fundReturn); benchmarkReturns.push(benchmarkReturn);
+      if (fundReturn > benchmarkReturn) wins += 1;
+    }
+    if (fundReturns.length) metrics[`${years}y`] = {
+      average_fund_percent: fundReturns.reduce((sum, value) => sum + value, 0) / fundReturns.length,
+      average_benchmark_percent: benchmarkReturns.reduce((sum, value) => sum + value, 0) / benchmarkReturns.length,
+      consistency_percent: (wins / fundReturns.length) * 100,
+      observations: fundReturns.length,
+    };
+  }
+  return metrics;
+}
+
+function assistantPortfolioChange(schemeCode) {
+  const portfolio = db.prepare(`SELECT p.portfolio_id FROM scheme_portfolio_mappings m JOIN holding_portfolios p ON p.portfolio_id=m.portfolio_id WHERE m.scheme_code=? LIMIT 1`).get(schemeCode);
+  if (!portfolio) return null;
+  const dates = db.prepare('SELECT DISTINCT as_of_date FROM portfolio_holdings WHERE portfolio_id=? ORDER BY as_of_date DESC LIMIT 2').all(portfolio.portfolio_id).map((row) => row.as_of_date);
+  if (dates.length < 2) return null;
+  const rows = db.prepare('SELECT as_of_date,instrument_name,isin,weight,asset_class FROM portfolio_holdings WHERE portfolio_id=? AND as_of_date IN (?,?) AND isin IS NOT NULL AND weight IS NOT NULL').all(portfolio.portfolio_id, dates[0], dates[1]);
+  const current = new Map(rows.filter((row) => row.as_of_date === dates[0]).map((row) => [row.isin, row]));
+  const previous = new Map(rows.filter((row) => row.as_of_date === dates[1]).map((row) => [row.isin, row]));
+  const additions = [...current.entries()].filter(([isin]) => !previous.has(isin)).map(([, row]) => row).sort((a, b) => b.weight - a.weight);
+  const exits = [...previous.entries()].filter(([isin]) => !current.has(isin)).map(([, row]) => row).sort((a, b) => b.weight - a.weight);
+  return { current_date: dates[0], previous_date: dates[1], new_holding_count: additions.length, exited_holding_count: exits.length, largest_additions: additions.slice(0, 5), largest_exits: exits.slice(0, 5) };
+}
+
+function assistantPortfolioOverlap(schemes) {
+  if (schemes.length !== 2) return null;
+  const snapshots = schemes.map((scheme) => db.prepare(`SELECT h.as_of_date,h.instrument_name,h.isin,h.weight,h.industry_or_rating FROM scheme_portfolio_mappings m JOIN portfolio_holdings h ON h.portfolio_id=m.portfolio_id WHERE m.scheme_code=? AND h.as_of_date=(SELECT MAX(h2.as_of_date) FROM portfolio_holdings h2 WHERE h2.portfolio_id=m.portfolio_id) AND h.isin IS NOT NULL AND h.weight IS NOT NULL`).all(scheme.scheme_code));
+  if (!snapshots[0].length || !snapshots[1].length) return null;
+  const right = new Map(snapshots[1].map((row) => [row.isin, row]));
+  const common = snapshots[0].filter((row) => right.has(row.isin)).map((row) => ({ holding: row.instrument_name, isin: row.isin, first_weight: row.weight, second_weight: right.get(row.isin).weight, common_weight: Math.min(row.weight, right.get(row.isin).weight) })).sort((a, b) => b.common_weight - a.common_weight);
+  return { first_fund: schemes[0].name, second_fund: schemes[1].name, common_holding_overlap_percent: common.reduce((sum, row) => sum + row.common_weight, 0) * 100, common_holdings: common.slice(0, 10) };
+}
+
+function assistantNavMovement(schemeCode) {
+  const priceDate = db.prepare('SELECT MAX(p.date) AS date FROM nse_equity_price_daily p JOIN nav_daily n ON n.scheme_code=? AND n.date=p.date').get(schemeCode)?.date;
+  if (!priceDate) return null;
+  const portfolio = db.prepare(`SELECT m.portfolio_id,MAX(h.as_of_date) AS as_of_date FROM scheme_portfolio_mappings m JOIN portfolio_holdings h ON h.portfolio_id=m.portfolio_id WHERE m.scheme_code=? AND h.as_of_date<=? GROUP BY m.portfolio_id ORDER BY as_of_date DESC LIMIT 1`).get(schemeCode, priceDate);
+  if (!portfolio) return null;
+  const rows = db.prepare(`SELECT h.instrument_name,h.isin,h.weight,px.close_price,px.previous_close_price FROM portfolio_holdings h JOIN nse_equity_price_daily px ON px.isin=UPPER(TRIM(h.isin)) AND px.date=? WHERE h.portfolio_id=? AND h.as_of_date=? AND h.weight IS NOT NULL AND px.previous_close_price>0`).all(priceDate, portfolio.portfolio_id, portfolio.as_of_date)
+    .map((row) => ({ ...row, stock_return_percent: ((row.close_price / row.previous_close_price) - 1) * 100, estimated_nav_impact_pp: row.weight * ((row.close_price / row.previous_close_price) - 1) * 100 }))
+    .filter((row) => Number.isFinite(row.estimated_nav_impact_pp));
+  return { date: priceDate, disclosure_date: portfolio.as_of_date, positive_drivers: rows.filter((row) => row.estimated_nav_impact_pp > 0).sort((a, b) => b.estimated_nav_impact_pp - a.estimated_nav_impact_pp).slice(0, 8), negative_drivers: rows.filter((row) => row.estimated_nav_impact_pp < 0).sort((a, b) => a.estimated_nav_impact_pp - b.estimated_nav_impact_pp).slice(0, 8) };
+}
+
+function assistantSchemeMetrics(scheme, includeHoldings) {
+  const navHistory = db.prepare('SELECT date,nav FROM nav_daily WHERE scheme_code=? ORDER BY date').all(scheme.scheme_code);
+  const points = navHistory.map((row) => ({ date: row.date, value: row.nav }));
+  const reportedBenchmark = db.prepare(`SELECT a.benchmark_name FROM scheme_total_aum_mappings m JOIN scheme_total_aum_daily a ON a.source_scheme_key=m.source_scheme_key WHERE m.scheme_code=? AND TRIM(COALESCE(a.benchmark_name,''))<>'' ORDER BY a.date DESC LIMIT 1`).get(scheme.scheme_code)?.benchmark_name || null;
+  const mappedBenchmark = db.prepare(`SELECT b.benchmark_id,b.name FROM category_benchmark_defaults d JOIN benchmarks b ON b.benchmark_id=d.benchmark_id WHERE d.category=? LIMIT 1`).get(scheme.category) || null;
+  const benchmarkHistory = mappedBenchmark ? db.prepare('SELECT date,value FROM benchmark_nav_daily WHERE benchmark_id=? ORDER BY date').all(mappedBenchmark.benchmark_id) : [];
+  const benchmarkIsUsable = Boolean(mappedBenchmark && benchmarkHistory.length && (!reportedBenchmark || benchmarkNamesMatch(mappedBenchmark.name, reportedBenchmark)));
+  const planType = growthPlanType(scheme.name);
+  return {
+    latest_nav: points.at(-1) ? { nav: points.at(-1).value, date: points.at(-1).date } : null,
+    point_to_point_returns: { one_year: assistantReturn(points, 1), three_year_cagr: assistantReturn(points, 3), five_year_cagr: assistantReturn(points, 5) },
+    benchmark: mappedBenchmark ? { name: mappedBenchmark.name, usable_for_comparison: benchmarkIsUsable, reported_name: reportedBenchmark } : null,
+    consistency: benchmarkIsUsable ? assistantConsistency(navHistory, benchmarkHistory) : null,
+    latest_factsheet: db.prepare('SELECT as_of_date,exit_load_text FROM scheme_factsheet_snapshots WHERE scheme_code=? ORDER BY as_of_date DESC LIMIT 1').get(scheme.scheme_code) || null,
+    latest_factsheet_risk: db.prepare('SELECT as_of_date,metric_window,sharpe_ratio,beta,tracking_error_percent,upside_capture_percent,downside_capture_percent,standard_deviation_percent,benchmark_name FROM scheme_factsheet_risk_snapshots WHERE scheme_code=? ORDER BY as_of_date DESC LIMIT 1').get(scheme.scheme_code) || null,
+    latest_debt_quants: db.prepare('SELECT as_of_date,modified_duration_years,average_maturity_years,residual_maturity_years,yield_to_maturity_percent,macaulay_duration_years,standard_deviation_percent FROM scheme_debt_quant_snapshots WHERE scheme_code=? ORDER BY as_of_date DESC LIMIT 1').get(scheme.scheme_code) || null,
+    latest_aum: db.prepare(`SELECT a.date,a.daily_aum_crore FROM scheme_total_aum_mappings m JOIN scheme_total_aum_daily a ON a.source_scheme_key=m.source_scheme_key WHERE m.scheme_code=? ORDER BY a.date DESC LIMIT 1`).get(scheme.scheme_code) || null,
+    latest_ter: planType ? db.prepare(`SELECT t.date,${planType}_ter AS ter_percent FROM scheme_ter_mappings m JOIN scheme_ter_daily t ON t.source_scheme_key=m.source_scheme_key WHERE m.scheme_code=? ORDER BY t.date DESC LIMIT 1`).get(scheme.scheme_code) || null : null,
+    latest_holdings: includeHoldings ? db.prepare(`SELECT h.as_of_date,h.instrument_name,h.asset_class,h.weight,h.industry_or_rating FROM portfolio_holdings h JOIN scheme_portfolio_mappings m ON m.portfolio_id=h.portfolio_id WHERE m.scheme_code=? AND h.as_of_date=(SELECT MAX(h2.as_of_date) FROM portfolio_holdings h2 WHERE h2.portfolio_id=m.portfolio_id) ORDER BY h.weight DESC LIMIT 10`).all(scheme.scheme_code) : [],
+    portfolio_change: includeHoldings ? assistantPortfolioChange(scheme.scheme_code) : null,
+  };
+}
+
+function schemeContextForAssistant(question) {
+  const words = [...new Set(String(question || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [])]
+    .filter((word) => !new Set(['what', 'which', 'where', 'when', 'with', 'from', 'have', 'does', 'fund', 'scheme', 'about', 'tell', 'explain', 'please', 'return', 'returns']).has(word))
+    .slice(0, 6);
+  if (!words.length) return [];
+  // Questions naturally contain ordinary words such as “information” or
+  // “available”. Match any meaningful name fragment rather than requiring
+  // every fragment to occur in the official scheme title.
+  const clauses = words.map(() => 'lower(s.name) LIKE ?').join(' OR ');
+  const candidates = db.prepare(`SELECT s.scheme_code,s.name,s.amc,s.category,
+      (SELECT n.nav FROM nav_daily n WHERE n.scheme_code=s.scheme_code ORDER BY n.date DESC LIMIT 1) AS latest_nav,
+      (SELECT n.date FROM nav_daily n WHERE n.scheme_code=s.scheme_code ORDER BY n.date DESC LIMIT 1) AS latest_nav_date
+    FROM schemes s WHERE ${clauses}`).all(...words.map((word) => `%${word}%`));
+  const requiredMatches = Math.min(words.length, 2);
+  const isComparison = /\b(vs|versus|compare|better|consistency|than|or|overlap|common)\b/i.test(question);
+  const includeHoldings = /\b(holding|holdings|portfolio|stock|sector|bond|credit|change|added|exit|exited|increase|decrease)\b/i.test(question);
+  const ranked = candidates
+    .map((scheme) => ({ ...scheme, assistant_match_score: words.filter((word) => scheme.name.toLowerCase().includes(word)).length, assistant_plan_score: /\bgrowth\b/i.test(scheme.name) ? (/\bdirect\b/i.test(scheme.name) ? 2 : 1) : 0 }))
+    .filter((scheme) => scheme.assistant_match_score >= requiredMatches)
+    .sort((left, right) => right.assistant_match_score - left.assistant_match_score || right.assistant_plan_score - left.assistant_plan_score || String(right.latest_nav_date || '').localeCompare(String(left.latest_nav_date || '')));
+  const schemes = [];
+  const amcs = new Set();
+  for (const candidate of ranked) {
+    if (isComparison && amcs.has(candidate.amc)) continue;
+    schemes.push(candidate); amcs.add(candidate.amc);
+    if (schemes.length >= (isComparison ? 2 : 1)) break;
+  }
+  const selected = schemes.map(({ assistant_match_score, assistant_plan_score, ...scheme }) => ({ ...scheme, verified_metrics: assistantSchemeMetrics(scheme, includeHoldings) }));
+  return { schemes: selected, overlap: /\b(overlap|common holding|common holdings)\b/i.test(question) ? assistantPortfolioOverlap(selected) : null, nav_movement: /\b(nav movement|nav driver|moved nav|why.*nav|nav.*why)\b/i.test(question) && selected[0] ? assistantNavMovement(selected[0].scheme_code) : null };
+}
+
+app.post('/api/assistant/chat', async (request, response) => {
+  const session = activeSession(request);
+  const question = String(request.body?.question || '').trim().replace(/\s+/g, ' ');
+  const language = request.body?.language === 'gu' ? 'Gujarati' : 'English';
+  if (question.length < 3 || question.length > 800) return response.status(400).json({ error: 'Ask one question between 3 and 800 characters.' });
+  const assistantData = schemeContextForAssistant(question);
+  const schemeContext = assistantData.schemes;
+  const context = JSON.stringify({
+    retrieved_at: new Date().toISOString(),
+    matched_schemes: schemeContext,
+    verified_pair_analysis: assistantData.overlap,
+    verified_nav_movement: assistantData.nav_movement,
+    note: 'Only the supplied records are verified dashboard data. A missing field means it is not available in the dashboard.',
+  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
+  try {
+    const ollamaResponse = await fetch(`${localLlmBaseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: localLlmModel,
+        stream: false,
+        options: { temperature: 0.2, num_predict: 220 },
+        messages: [
+          { role: 'system', content: `You are the internal Fund Insights assistant. Answer only from the supplied dashboard context. Never invent a number, source, date, holding, fact, or calculation. The verified_metrics field contains exact calculations from the local dashboard: use those values directly whenever they answer the question. If context does not contain what is needed, say that clearly and suggest the relevant dashboard section. Do not give buy, sell, or investment recommendations. Keep answers concise, explain financial terms simply, and retain numeric values exactly. Your response language is strictly ${language}: write every explanatory word in ${language}, with no mixture of another language. Numbers, dates, ISINs, scheme codes and tickers may remain in English characters.` },
+          { role: 'user', content: `Question: ${question}\n\nDashboard context: ${context}` },
+        ],
+      }),
+    });
+    const payload = await ollamaResponse.json().catch(() => ({}));
+    if (!ollamaResponse.ok || !payload?.message?.content) throw new Error(payload?.error || `Local AI returned HTTP ${ollamaResponse.status}`);
+    logUsage(session.user.user_id, 'page_view', 'assistant');
+    response.json({ answer: String(payload.message.content).trim(), matchedSchemes: schemeContext.map(({ scheme_code, name }) => ({ scheme_code, name })), verified: assistantData });
+  } catch (error) {
+    const unavailable = error.name === 'AbortError'
+      ? 'The local AI took too long to respond. Please try again.'
+      : `The local AI is unavailable. Make sure Ollama is running and model ${localLlmModel} is installed.`;
+    response.status(503).json({ error: unavailable });
+  } finally {
+    clearTimeout(timeout);
+  }
 });
 
 app.get('/api/admin/users', requireSuperAdmin, (request, response) => {
